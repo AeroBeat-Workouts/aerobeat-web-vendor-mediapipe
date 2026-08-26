@@ -1,0 +1,29 @@
+{
+  "name": "@aerobeat/web-vendor-mediapipe",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "check": "npm run check:types && npm run check:jsdoc && npm run check:imports && npm run check:components && npm run check:mediapipe",
+    "check:types": "tsc --noEmit --allowJs --checkJs --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM src/index.js src/mediapipe-adapter.js src/mediapipe-normalize.js",
+    "check:jsdoc": "node scripts/validate-jsdoc-no-any.js",
+    "check:imports": "node scripts/validate-public-imports.js",
+    "check:components": "node scripts/validate-component-rules.js",
+    "check:mediapipe": "node scripts/validate-mediapipe-adapter.js",
+    "test": "npm run check",
+    "test:browser": "node scripts/validate-browser-smoke.js",
+    "demo": "npm --prefix .testbed run demo",
+    "testbed:serve": "npm --prefix .testbed run serve"
+  },
+  "dependencies": {
+    "@aerobeat/web-contracts": "file:../aerobeat-web-contracts",
+    "@mediapipe/tasks-vision": "1.0.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.46.1",
+    "typescript": "^5.9.2"
+  }
+}

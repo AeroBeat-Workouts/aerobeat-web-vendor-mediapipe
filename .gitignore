@@ -1,5 +1,31 @@
+node_modules/
+.testbed/node_modules/
+dist/
+build/
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+screenshots/
+videos/
+traces/
+*.trace.zip
+.env
+.env.*
+!.env.example
+.DS_Store
+.cache/
+.vite/
+.tmp/
+tmp/
+*.tgz
+release/
 
-# Beads / Dolt files (added by bd init)
+# Vendor binaries are fetched and verified outside Git.
+*.task
+*.wasm
+
+# Beads / Dolt files
 .dolt/
 *.db
 .beads-credential-key

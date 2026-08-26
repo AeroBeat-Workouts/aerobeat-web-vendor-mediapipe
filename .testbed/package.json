@@ -1,0 +1,10 @@
+{
+  "name": "@aerobeat/web-vendor-mediapipe-testbed",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo": "echo \"Serve the repository root and open .testbed/demo/index.html.\"",
+    "serve": "echo \"Use the root browser-smoke validator for a controlled static server.\""
+  }
+}
