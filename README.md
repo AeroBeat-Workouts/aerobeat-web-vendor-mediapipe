@@ -31,8 +31,8 @@ Every live, mock, and replay adapter literally conforms to the `@aerobeat/web-co
 
 - matching `vendorId` and plain `model` identity plus lifecycle `status` (including `disposed`)
 - `load()` and `estimateNormalizedPoseFrame()`
-- generic `getExecutionTelemetry()` with actual location/provider and latest load/estimate timings
-- additive vendor diagnostics through `getExecutionStatus()` and `getTelemetryStatus()`
+- generic `getExecutionTelemetry()` with actual location/provider plus load, end-to-end estimate, MediaPipe runtime, and seven-point postprocess timings
+- additive vendor diagnostics through `getExecutionStatus()` and `getTelemetryStatus()`, including the configured detector/presence/tracking thresholds
 - immutable capabilities declaring main-thread/worker/mirroring/frame-size support, with live `wasm`/`webgl` providers and replay-only capabilities for deterministic mock frames
 - terminal, idempotent `dispose()`; later load/estimate calls reject and live resources close once
 
@@ -45,7 +45,7 @@ Normalized output contains only nose, shoulders, elbows, and wrists, using names
 
 The adapter reports selected and actual delegates distinctly. It does not claim WebGPU support and performs no silent delegate fallback. A failed delegate load is reported as failed so the caller can make an explicit backend decision.
 
-Defaults are `runningMode: "VIDEO"`, `numPoses: 1`, and `outputSegmentationMasks: false`. `detectForVideo()` is synchronous on the calling thread. AeroBeat therefore must keep its existing bounded submission cadence; this package does not pretend the call is worker-isolated. Inference timestamps use an injectable monotonic clock and are forced strictly increasing, while output timestamps preserve capture/source truth.
+Defaults are `runningMode: "VIDEO"`, `numPoses: 1`, `outputSegmentationMasks: false`, and `0.5` for pose-detection, pose-presence, and tracking confidence. All three confidence thresholds are injectable at creation time, must be finite values in `[0,1]`, reach Pose Landmarker options exactly, and appear in plain telemetry/detail for reproducible tuning. `detectForVideo()` is synchronous on the calling thread. AeroBeat therefore must keep its existing bounded submission cadence; this package does not pretend the call is worker-isolated. Inference timestamps use an injectable monotonic clock and are forced strictly increasing, while output timestamps preserve capture/source truth.
 
 ## Confidence Semantics
 

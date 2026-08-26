@@ -103,6 +103,9 @@ export const mediaPipeReplayCapabilities = Object.freeze({
  * @property {string} [modelName] Injectable telemetry display name.
  * @property {string} [modelSha256] Injectable telemetry checksum.
  * @property {number} [modelSizeBytes] Injectable telemetry asset size.
+ * @property {number} [minPoseDetectionConfidence] Minimum detector confidence in [0,1]; defaults to 0.5.
+ * @property {number} [minPosePresenceConfidence] Minimum landmark presence confidence in [0,1]; defaults to 0.5.
+ * @property {number} [minTrackingConfidence] Minimum tracking confidence in [0,1]; defaults to 0.5.
  * @property {() => number} [now] Monotonic clock used by detectForVideo.
  */
 
@@ -131,7 +134,12 @@ export const mediaPipeReplayCapabilities = Object.freeze({
  * @property {boolean} fallback Whether a fallback occurred.
  * @property {boolean} disposed Whether dispose was called since the last load.
  * @property {number | undefined} loadDurationMs Most recent load duration.
- * @property {number | undefined} lastInferenceDurationMs Last synchronous call duration.
+ * @property {number | undefined} lastInferenceDurationMs Last end-to-end adapter estimate duration.
+ * @property {number} [runtimeInferenceDurationMs] Most recent synchronous MediaPipe runtime duration.
+ * @property {number} [postprocessDurationMs] Most recent seven-point normalization duration.
+ * @property {number} [minPoseDetectionConfidence] Configured detector confidence threshold.
+ * @property {number} [minPosePresenceConfidence] Configured landmark presence threshold.
+ * @property {number} [minTrackingConfidence] Configured tracking threshold.
  * @property {string} confidenceSemantics Confidence interpretation.
  * @property {string | undefined} error Last failure message.
  */
@@ -157,7 +165,7 @@ export const mediaPipeReplayCapabilities = Object.freeze({
 /**
  * @typedef {Object} MediaPipeRuntime
  * @property {(wasmRootUrl: string) => Promise<unknown>} resolveVisionFiles Resolves Tasks Vision WASM files.
- * @property {(visionFiles: unknown, options: { baseOptions: { modelAssetPath: string, delegate: "CPU" | "GPU" }, runningMode: "VIDEO", numPoses: 1, outputSegmentationMasks: false }) => Promise<PoseLandmarkerLike>} createPoseLandmarker Creates a pose task.
+ * @property {(visionFiles: unknown, options: { baseOptions: { modelAssetPath: string, delegate: "CPU" | "GPU" }, runningMode: "VIDEO", numPoses: 1, outputSegmentationMasks: false, minPoseDetectionConfidence: number, minPosePresenceConfidence: number, minTrackingConfidence: number }) => Promise<PoseLandmarkerLike>} createPoseLandmarker Creates a pose task.
  */
 
 /** @typedef {() => Promise<MediaPipeRuntime>} MediaPipeRuntimeLoader */
@@ -213,6 +221,18 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
     ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSha256 : "");
   const modelSizeBytes = options.modelSizeBytes
     ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSizeBytes : 0);
+  const minPoseDetectionConfidence = validateConfidenceThreshold(
+    options.minPoseDetectionConfidence ?? 0.5,
+    "minPoseDetectionConfidence"
+  );
+  const minPosePresenceConfidence = validateConfidenceThreshold(
+    options.minPosePresenceConfidence ?? 0.5,
+    "minPosePresenceConfidence"
+  );
+  const minTrackingConfidence = validateConfidenceThreshold(
+    options.minTrackingConfidence ?? 0.5,
+    "minTrackingConfidence"
+  );
   const now = options.now ?? defaultNow;
 
   /** @type {"idle" | "loading" | "ready" | "failed" | "disposed"} */
@@ -228,6 +248,10 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
   let loadDurationMs;
   /** @type {number | undefined} */
   let lastInferenceDurationMs;
+  /** @type {number | undefined} */
+  let runtimeInferenceDurationMs;
+  /** @type {number | undefined} */
+  let postprocessDurationMs;
   let disposed = false;
   /** @type {string | undefined} */
   let lastError;
@@ -235,9 +259,9 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
   const executionStatus = Object.freeze({
     mode: /** @type {const} */ ("main-thread"),
     delegate,
-    detail: delegate === mediaPipeDelegates.cpuWasm
+    detail: `${delegate === mediaPipeDelegates.cpuWasm
       ? "MediaPipe Tasks Vision CPU delegate via synchronous WASM"
-      : "MediaPipe Tasks Vision GPU delegate via synchronous WebGL"
+      : "MediaPipe Tasks Vision GPU delegate via synchronous WebGL"} / thresholds detection ${minPoseDetectionConfidence} presence ${minPosePresenceConfidence} tracking ${minTrackingConfidence}`
   });
 
   return {
@@ -254,7 +278,9 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
         detail: lastError ?? executionStatus.detail,
         fallback: false,
         loadDurationMs,
-        estimateDurationMs: lastInferenceDurationMs
+        estimateDurationMs: lastInferenceDurationMs,
+        runtimeInferenceDurationMs,
+        postprocessDurationMs
       };
     },
     getExecutionStatus() {
@@ -279,6 +305,11 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
         disposed,
         loadDurationMs,
         lastInferenceDurationMs,
+        runtimeInferenceDurationMs,
+        postprocessDurationMs,
+        minPoseDetectionConfidence,
+        minPosePresenceConfidence,
+        minTrackingConfidence,
         confidenceSemantics: "MediaPipe landmark visibility (presence fallback), vendor-specific and uncalibrated",
         error: lastError
       };
@@ -309,7 +340,10 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
             },
             runningMode: "VIDEO",
             numPoses: 1,
-            outputSegmentationMasks: false
+            outputSegmentationMasks: false,
+            minPoseDetectionConfidence,
+            minPosePresenceConfidence,
+            minTrackingConfidence
           });
           if (disposed) {
             loadedPoseLandmarker.close();
@@ -351,9 +385,13 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
       const inferenceTimestampMs = nextMonotonicTimestamp(now(), lastVideoTimestampMs);
       lastVideoTimestampMs = inferenceTimestampMs;
       const startedAtMs = now();
+      /** @type {number | undefined} */
+      let runtimeFinishedAtMs;
       try {
         const result = poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs);
-        return normalizeMediaPipePoseFrame(result, {
+        runtimeFinishedAtMs = now();
+        runtimeInferenceDurationMs = Math.max(0, runtimeFinishedAtMs - startedAtMs);
+        const frame = normalizeMediaPipePoseFrame(result, {
           currentTime: readMediaCurrentTime(frameSource)
         }, {
           sourceId: estimateOptions.sourceId ?? sourceId,
@@ -361,12 +399,22 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
           mirrored: estimateOptions.mirrored ?? mirrored,
           now
         });
+        const finishedAtMs = now();
+        postprocessDurationMs = Math.max(0, finishedAtMs - runtimeFinishedAtMs);
+        lastInferenceDurationMs = Math.max(0, finishedAtMs - startedAtMs);
+        return frame;
       } catch (error) {
+        const failedAtMs = now();
+        if (runtimeFinishedAtMs === undefined) {
+          runtimeInferenceDurationMs = Math.max(0, failedAtMs - startedAtMs);
+          postprocessDurationMs = undefined;
+        } else {
+          postprocessDurationMs = Math.max(0, failedAtMs - runtimeFinishedAtMs);
+        }
+        lastInferenceDurationMs = Math.max(0, failedAtMs - startedAtMs);
         status = mediaPipeAdapterStatuses.failed;
         lastError = readErrorMessage(error);
         throw error;
-      } finally {
-        lastInferenceDurationMs = Math.max(0, now() - startedAtMs);
       }
     },
     dispose() {
@@ -380,6 +428,8 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
       actualDelegate = undefined;
       loadDurationMs = undefined;
       lastInferenceDurationMs = undefined;
+      runtimeInferenceDurationMs = undefined;
+      postprocessDurationMs = undefined;
       lastError = undefined;
       disposed = true;
       status = mediaPipeAdapterStatuses.disposed;
@@ -532,6 +582,18 @@ function validateDelegate(delegate) {
     throw new Error(`Unsupported MediaPipe delegate: ${delegate}`);
   }
   return delegate;
+}
+
+/**
+ * @param {number} value
+ * @param {string} name
+ * @returns {number}
+ */
+function validateConfidenceThreshold(value, name) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new RangeError(`${name} must be a finite number in [0,1].`);
+  }
+  return value;
 }
 
 /**

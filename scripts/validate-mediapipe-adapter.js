@@ -59,6 +59,36 @@ assert.throws(
   }),
   /Unsupported MediaPipe delegate/u
 );
+assert.throws(
+  () => createMediaPipePoseAdapterFromRuntime(async () => createFakeRuntime(), {
+    minPoseDetectionConfidence: -0.001
+  }),
+  /minPoseDetectionConfidence must be a finite number in \[0,1\]/u
+);
+assert.throws(
+  () => createMediaPipePoseAdapterFromRuntime(async () => createFakeRuntime(), {
+    minPosePresenceConfidence: 1.001
+  }),
+  /minPosePresenceConfidence must be a finite number in \[0,1\]/u
+);
+assert.throws(
+  () => createMediaPipePoseAdapterFromRuntime(async () => createFakeRuntime(), {
+    minTrackingConfidence: Number.NaN
+  }),
+  /minTrackingConfidence must be a finite number in \[0,1\]/u
+);
+assert.throws(
+  () => createMediaPipePoseAdapterFromRuntime(async () => createFakeRuntime(), {
+    minTrackingConfidence: Number.POSITIVE_INFINITY
+  }),
+  /minTrackingConfidence must be a finite number in \[0,1\]/u
+);
+assert.throws(
+  () => createMediaPipePoseAdapterFromRuntime(async () => createFakeRuntime(), {
+    minTrackingConfidence: /** @type {number} */ (/** @type {unknown} */ ("0.5"))
+  }),
+  /minTrackingConfidence must be a finite number in \[0,1\]/u
+);
 const derivedCustomModelAdapter = createMediaPipePoseAdapterFromRuntime(
   async () => createFakeRuntime(),
   { modelUrl: "https://example.invalid/custom.task" }
@@ -70,6 +100,24 @@ assert.equal(
 );
 assert.equal(derivedCustomModelAdapter.getTelemetryStatus().modelSha256, "");
 assert.equal(derivedCustomModelAdapter.getTelemetryStatus().modelSizeBytes, 0);
+const thresholdRuntime = createFakeRuntime();
+const thresholdAdapter = createMediaPipePoseAdapterFromRuntime(
+  async () => thresholdRuntime,
+  {
+    minPoseDetectionConfidence: 0,
+    minPosePresenceConfidence: 1,
+    minTrackingConfidence: 0.25
+  }
+);
+await thresholdAdapter.load();
+assert.equal(thresholdRuntime.createOptions?.minPoseDetectionConfidence, 0);
+assert.equal(thresholdRuntime.createOptions?.minPosePresenceConfidence, 1);
+assert.equal(thresholdRuntime.createOptions?.minTrackingConfidence, 0.25);
+assert.equal(thresholdAdapter.getTelemetryStatus().minPoseDetectionConfidence, 0);
+assert.equal(thresholdAdapter.getTelemetryStatus().minPosePresenceConfidence, 1);
+assert.equal(thresholdAdapter.getTelemetryStatus().minTrackingConfidence, 0.25);
+assert.match(thresholdAdapter.getExecutionTelemetry().detail ?? "", /detection 0 presence 1 tracking 0.25/u);
+thresholdAdapter.dispose();
 
 const mockAdapter = createMediaPipeMockPoseAdapter();
 assert.deepEqual(mockAdapter.model, mediaPipeReplayModel);
@@ -124,7 +172,10 @@ assert.deepEqual(runtime.createOptions, {
   },
   runningMode: "VIDEO",
   numPoses: 1,
-  outputSegmentationMasks: false
+  outputSegmentationMasks: false,
+  minPoseDetectionConfidence: 0.5,
+  minPosePresenceConfidence: 0.5,
+  minTrackingConfidence: 0.5
 });
 
 const frameSource = /** @type {HTMLCanvasElement} */ (/** @type {unknown} */ ({
@@ -137,6 +188,11 @@ const firstFrame = await liveAdapter.estimateNormalizedPoseFrame(frameSource, {
   timestampMs: 1234,
   mirrored: false
 });
+assert.equal(liveAdapter.getExecutionTelemetry().runtimeInferenceDurationMs, 2);
+assert.equal(liveAdapter.getExecutionTelemetry().postprocessDurationMs, 1);
+assert.equal(liveAdapter.getExecutionTelemetry().estimateDurationMs, 3);
+assert.equal(liveAdapter.getTelemetryStatus().runtimeInferenceDurationMs, 2);
+assert.equal(liveAdapter.getTelemetryStatus().postprocessDurationMs, 1);
 const secondFrame = await liveAdapter.estimateNormalizedPoseFrame(frameSource, {
   timestampMs: 1234
 });
@@ -169,6 +225,7 @@ assert.deepEqual(firstFrame.landmarks[6], {
 assert.equal(secondFrame.timestampMs, 1234);
 assert.equal(liveAdapter.getExecutionStatus().delegate, mediaPipeDelegates.cpuWasm);
 assert.match(liveAdapter.getExecutionStatus().detail, /CPU.*WASM/u);
+assert.match(liveAdapter.getExecutionTelemetry().detail ?? "", /detection 0.5 presence 0.5 tracking 0.5/u);
 const cpuTelemetry = liveAdapter.getTelemetryStatus();
 assert.equal(liveAdapter.model.vendorId, liveAdapter.vendorId);
 assert.equal(liveAdapter.model.modelId, "fixture-pose");
@@ -183,12 +240,19 @@ assert.equal(cpuTelemetry.modelSha256, "fixture-sha256");
 assert.equal(cpuTelemetry.modelSizeBytes, 123);
 assert.equal(typeof cpuTelemetry.loadDurationMs, "number");
 assert.equal(typeof cpuTelemetry.lastInferenceDurationMs, "number");
+assert.equal(typeof cpuTelemetry.runtimeInferenceDurationMs, "number");
+assert.equal(typeof cpuTelemetry.postprocessDurationMs, "number");
+assert.equal(cpuTelemetry.minPoseDetectionConfidence, 0.5);
+assert.equal(cpuTelemetry.minPosePresenceConfidence, 0.5);
+assert.equal(cpuTelemetry.minTrackingConfidence, 0.5);
 const genericCpuTelemetry = liveAdapter.getExecutionTelemetry();
 assert.equal(genericCpuTelemetry.location, "main-thread");
 assert.equal(genericCpuTelemetry.provider, "wasm");
 assert.equal(genericCpuTelemetry.fallback, false);
 assert.equal(typeof genericCpuTelemetry.loadDurationMs, "number");
 assert.equal(typeof genericCpuTelemetry.estimateDurationMs, "number");
+assert.equal(typeof genericCpuTelemetry.runtimeInferenceDurationMs, "number");
+assert.equal(typeof genericCpuTelemetry.postprocessDurationMs, "number");
 
 liveAdapter.dispose();
 liveAdapter.dispose();
@@ -202,6 +266,9 @@ await assert.rejects(
 );
 assert.equal(runtime.closed, 1);
 assert.equal(liveAdapter.status, mediaPipeAdapterStatuses.disposed);
+assert.equal(liveAdapter.getExecutionTelemetry().estimateDurationMs, undefined);
+assert.equal(liveAdapter.getExecutionTelemetry().runtimeInferenceDurationMs, undefined);
+assert.equal(liveAdapter.getExecutionTelemetry().postprocessDurationMs, undefined);
 
 const gpuRuntime = createFakeRuntime();
 const gpuAdapter = createMediaPipePoseAdapterFromRuntime(async () => gpuRuntime, {
@@ -243,6 +310,9 @@ await assert.rejects(
 );
 assert.equal(failingInference.status, mediaPipeAdapterStatuses.failed);
 assert.equal(failingInference.getTelemetryStatus().error, "detect failed");
+assert.equal(typeof failingInference.getExecutionTelemetry().estimateDurationMs, "number");
+assert.equal(typeof failingInference.getExecutionTelemetry().runtimeInferenceDurationMs, "number");
+assert.equal(failingInference.getExecutionTelemetry().postprocessDurationMs, undefined);
 failingInference.dispose();
 assert.equal(failingInferenceRuntime.closed, 1);
 
@@ -259,7 +329,7 @@ console.log("MediaPipe adapter validation passed.");
 /**
  * @typedef {import("../src/mediapipe-adapter.js").MediaPipeRuntime & {
  *   wasmRootUrl: string | undefined,
- *   createOptions: { baseOptions: { modelAssetPath: string, delegate: "CPU" | "GPU" }, runningMode: "VIDEO", numPoses: 1, outputSegmentationMasks: false } | undefined,
+ *   createOptions: { baseOptions: { modelAssetPath: string, delegate: "CPU" | "GPU" }, runningMode: "VIDEO", numPoses: 1, outputSegmentationMasks: false, minPoseDetectionConfidence: number, minPosePresenceConfidence: number, minTrackingConfidence: number } | undefined,
  *   detectTimestamps: number[],
  *   closed: number
  * }} FakeRuntime
