@@ -36,6 +36,15 @@ export const mediaPipeDefaultModel = Object.freeze({
   runtimeVersion: mediaPipePackageVersion
 });
 
+/** @type {Readonly<import("@aerobeat/web-contracts/pose-adapter").AeroPoseModelIdentity>} */
+export const mediaPipeReplayModel = Object.freeze({
+  vendorId: mediaPipeVendorId,
+  modelId: "deterministic-replay",
+  modelVersion: "basic-upper-body/1",
+  runtimeId: "aerobeat-replay",
+  runtimeVersion: "1"
+});
+
 /** @type {Readonly<{ idle: "idle", loading: "loading", ready: "ready", failed: "failed", disposed: "disposed" }>} */
 export const mediaPipeAdapterStatuses = Object.freeze({
   idle: "idle",
@@ -68,6 +77,16 @@ export const mediaPipeCapabilities = Object.freeze({
   ])
 });
 
+export const mediaPipeReplayCapabilities = Object.freeze({
+  supportsMainThread: true,
+  supportsWorker: false,
+  supportsMirroring: false,
+  supportsFrameSizeOverride: false,
+  executionProviders: Object.freeze(["replay"]),
+  deterministicReplay: true,
+  normalizedLandmarkNames: mediaPipeCapabilities.normalizedLandmarkNames
+});
+
 /** @typedef {import("@aerobeat/web-contracts/pose-shapes").NormalizedPoseFrame} NormalizedPoseFrame */
 /** @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseFrameSource} MediaPipeFrameSource */
 /** @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseEstimateOptions} MediaPipeEstimateOptions */
@@ -97,7 +116,7 @@ export const mediaPipeCapabilities = Object.freeze({
 /**
  * @typedef {Object} MediaPipeTelemetryStatus
  * @property {"mediapipe"} vendorId Vendor identifier.
- * @property {"@mediapipe/tasks-vision" | "deterministic-replay"} provider Runtime provider.
+ * @property {"@mediapipe/tasks-vision" | "replay"} provider Runtime provider.
  * @property {string} packageVersion Package version.
  * @property {string} model Model display name.
  * @property {string} modelId Stable model identity matching the generic adapter model.
@@ -121,7 +140,7 @@ export const mediaPipeCapabilities = Object.freeze({
  * @typedef {import("@aerobeat/web-contracts/pose-adapter").AeroPoseAdapter & {
  *   vendorId: "mediapipe",
  *   model: Readonly<import("@aerobeat/web-contracts/pose-adapter").AeroPoseModelIdentity>,
- *   capabilities: typeof mediaPipeCapabilities,
+ *   capabilities: typeof mediaPipeCapabilities | typeof mediaPipeReplayCapabilities,
  *   getExecutionTelemetry: () => import("@aerobeat/web-contracts/pose-adapter").AeroPoseExecutionTelemetry,
  *   getExecutionStatus: () => MediaPipeExecutionStatus,
  *   getTelemetryStatus: () => MediaPipeTelemetryStatus,
@@ -379,11 +398,11 @@ export function createMediaPipeMockPoseAdapter(options = {}) {
 
   return {
     vendorId: mediaPipeVendorId,
-    model: mediaPipeDefaultModel,
+    model: mediaPipeReplayModel,
     get status() {
       return status;
     },
-    capabilities: mediaPipeCapabilities,
+    capabilities: mediaPipeReplayCapabilities,
     getExecutionTelemetry() {
       return {
         location: "unknown",
@@ -404,11 +423,11 @@ export function createMediaPipeMockPoseAdapter(options = {}) {
     getTelemetryStatus() {
       return {
         vendorId: mediaPipeVendorId,
-        provider: "deterministic-replay",
+        provider: "replay",
         packageVersion: mediaPipePackageVersion,
         model: "MediaPipe deterministic replay",
-        modelId: mediaPipeDefaultModel.modelId,
-        modelVersion: mediaPipeDefaultModel.modelVersion,
+        modelId: mediaPipeReplayModel.modelId,
+        modelVersion: mediaPipeReplayModel.modelVersion,
         modelUrl: "",
         modelSha256: "",
         modelSizeBytes: 0,

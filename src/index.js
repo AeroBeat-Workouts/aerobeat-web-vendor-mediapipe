@@ -15,6 +15,8 @@ export {
   mediaPipeDelegates,
   mediaPipeLiveSourceId,
   mediaPipePackageVersion,
+  mediaPipeReplayCapabilities,
   mediaPipeReplayFixtureId,
+  mediaPipeReplayModel,
   mediaPipeVendorId
 } from "./mediapipe-adapter.js";

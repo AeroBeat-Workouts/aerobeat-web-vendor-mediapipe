@@ -17,6 +17,8 @@ import {
   mediaPipeDefaultModelUrl,
   mediaPipeDelegates,
   mediaPipeLiveSourceId,
+  mediaPipeReplayCapabilities,
+  mediaPipeReplayModel,
   mediaPipeVendorId
 } from "../src/index.js";
 import { createMediaPipePoseAdapterFromRuntime } from "../src/mediapipe-adapter.js";
@@ -70,6 +72,17 @@ assert.equal(derivedCustomModelAdapter.getTelemetryStatus().modelSha256, "");
 assert.equal(derivedCustomModelAdapter.getTelemetryStatus().modelSizeBytes, 0);
 
 const mockAdapter = createMediaPipeMockPoseAdapter();
+assert.deepEqual(mockAdapter.model, mediaPipeReplayModel);
+assert.notDeepEqual(mockAdapter.model, mediaPipeDefaultModel);
+assert.equal(Object.isFrozen(mockAdapter.model), true);
+assert.deepEqual(mockAdapter.capabilities, mediaPipeReplayCapabilities);
+assert.notDeepEqual(mockAdapter.capabilities.executionProviders, mediaPipeCapabilities.executionProviders);
+assert.deepEqual(mockAdapter.capabilities.executionProviders, ["replay"]);
+assert.equal(mockAdapter.capabilities.supportsMirroring, false);
+assert.equal(mockAdapter.capabilities.supportsFrameSizeOverride, false);
+assert.equal(mockAdapter.getTelemetryStatus().modelId, mockAdapter.model.modelId);
+assert.equal(mockAdapter.getTelemetryStatus().modelVersion, mockAdapter.model.modelVersion);
+assert.equal(mockAdapter.getTelemetryStatus().provider, mockAdapter.getExecutionTelemetry().provider);
 await mockAdapter.load();
 const mockFrame = await mockAdapter.estimateNormalizedPoseFrame();
 assert.equal(mockFrame.landmarks.length, 7);
