@@ -91,8 +91,15 @@ assert.equal(mockAdapter.getExecutionTelemetry().location, "unknown");
 assert.equal(mockAdapter.getExecutionTelemetry().provider, "replay");
 assert.equal(mockAdapter.getTelemetryStatus().actualDelegate, "replay");
 mockAdapter.dispose();
+mockAdapter.dispose();
 assert.equal(mockAdapter.status, mediaPipeAdapterStatuses.disposed);
 assert.equal(mockAdapter.getTelemetryStatus().disposed, true);
+await assert.rejects(() => mockAdapter.load(), /disposed.*cannot be loaded/iu);
+await assert.rejects(
+  () => mockAdapter.estimateNormalizedPoseFrame(),
+  /disposed.*cannot estimate pose/iu
+);
+assert.equal(mockAdapter.status, mediaPipeAdapterStatuses.disposed);
 
 const runtime = createFakeRuntime();
 const now = createClock([100, 100, 100, 99, 101, 102, 103, 104]);
@@ -184,9 +191,17 @@ assert.equal(typeof genericCpuTelemetry.loadDurationMs, "number");
 assert.equal(typeof genericCpuTelemetry.estimateDurationMs, "number");
 
 liveAdapter.dispose();
+liveAdapter.dispose();
 assert.equal(runtime.closed, 1);
 assert.equal(liveAdapter.status, mediaPipeAdapterStatuses.disposed);
 assert.equal(liveAdapter.getTelemetryStatus().disposed, true);
+await assert.rejects(() => liveAdapter.load(), /disposed.*cannot be loaded/iu);
+await assert.rejects(
+  () => liveAdapter.estimateNormalizedPoseFrame(frameSource),
+  /disposed.*cannot estimate pose/iu
+);
+assert.equal(runtime.closed, 1);
+assert.equal(liveAdapter.status, mediaPipeAdapterStatuses.disposed);
 
 const gpuRuntime = createFakeRuntime();
 const gpuAdapter = createMediaPipePoseAdapterFromRuntime(async () => gpuRuntime, {

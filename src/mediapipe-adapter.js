@@ -284,13 +284,15 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
       };
     },
     async load() {
+      if (disposed || status === mediaPipeAdapterStatuses.disposed) {
+        throw new Error("Disposed MediaPipe adapter cannot be loaded.");
+      }
       if (status === mediaPipeAdapterStatuses.ready) {
         return;
       }
       if (loading) {
         return loading;
       }
-      disposed = false;
       lastError = undefined;
       actualDelegate = undefined;
       loadDurationMs = undefined;
@@ -300,7 +302,7 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
         try {
           const runtime = await loadRuntime();
           const visionFiles = await runtime.resolveVisionFiles(wasmRootUrl);
-          poseLandmarker = await runtime.createPoseLandmarker(visionFiles, {
+          const loadedPoseLandmarker = await runtime.createPoseLandmarker(visionFiles, {
             baseOptions: {
               modelAssetPath: modelUrl,
               delegate: delegate === mediaPipeDelegates.cpuWasm ? "CPU" : "GPU"
@@ -309,20 +311,32 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
             numPoses: 1,
             outputSegmentationMasks: false
           });
+          if (disposed) {
+            loadedPoseLandmarker.close();
+            throw new Error("MediaPipe adapter was disposed while loading.");
+          }
+          poseLandmarker = loadedPoseLandmarker;
           actualDelegate = delegate;
           status = mediaPipeAdapterStatuses.ready;
         } catch (error) {
-          status = mediaPipeAdapterStatuses.failed;
-          lastError = readErrorMessage(error);
+          if (!disposed) {
+            status = mediaPipeAdapterStatuses.failed;
+            lastError = readErrorMessage(error);
+          }
           throw error;
         } finally {
-          loadDurationMs = Math.max(0, now() - loadStartedAtMs);
+          if (!disposed) {
+            loadDurationMs = Math.max(0, now() - loadStartedAtMs);
+          }
           loading = undefined;
         }
       })();
       return loading;
     },
     async estimateNormalizedPoseFrame(frameSource, estimateOptions = {}) {
+      if (disposed || status === mediaPipeAdapterStatuses.disposed) {
+        throw new Error("Disposed MediaPipe adapter cannot estimate pose.");
+      }
       if (!frameSource) {
         throw new Error("MediaPipe pose estimation requires a browser frame source.");
       }
@@ -356,6 +370,9 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
       }
     },
     dispose() {
+      if (disposed) {
+        return;
+      }
       poseLandmarker?.close();
       poseLandmarker = undefined;
       loading = undefined;
@@ -444,10 +461,15 @@ export function createMediaPipeMockPoseAdapter(options = {}) {
       };
     },
     async load() {
-      disposed = false;
+      if (disposed || status === mediaPipeAdapterStatuses.disposed) {
+        throw new Error("Disposed MediaPipe replay adapter cannot be loaded.");
+      }
       status = mediaPipeAdapterStatuses.ready;
     },
     async estimateNormalizedPoseFrame() {
+      if (disposed || status === mediaPipeAdapterStatuses.disposed) {
+        throw new Error("Disposed MediaPipe replay adapter cannot estimate pose.");
+      }
       if (status !== mediaPipeAdapterStatuses.ready) {
         await this.load();
       }
@@ -456,6 +478,9 @@ export function createMediaPipeMockPoseAdapter(options = {}) {
       return clonePoseFrame(frame);
     },
     dispose() {
+      if (disposed) {
+        return;
+      }
       disposed = true;
       status = mediaPipeAdapterStatuses.disposed;
       cursor = 0;

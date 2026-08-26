@@ -34,7 +34,7 @@ Every live, mock, and replay adapter literally conforms to the `@aerobeat/web-co
 - generic `getExecutionTelemetry()` with actual location/provider and latest load/estimate timings
 - additive vendor diagnostics through `getExecutionStatus()` and `getTelemetryStatus()`
 - immutable capabilities declaring main-thread/worker/mirroring/frame-size support, with live `wasm`/`webgl` providers and replay-only capabilities for deterministic mock frames
-- `dispose()`
+- terminal, idempotent `dispose()`; later load/estimate calls reject and live resources close once
 
 Normalized output contains only nose, shoulders, elbows, and wrists, using names `nose`, `left_shoulder`, `right_shoulder`, `left_elbow`, `right_elbow`, `left_wrist`, and `right_wrist`. `sourceId`, source timestamp, and mirror metadata propagate independently of MediaPipe's internal inference timestamp.
 
