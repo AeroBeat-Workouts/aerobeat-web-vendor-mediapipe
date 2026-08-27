@@ -195,11 +195,11 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
       lastError = undefined;
       actualDelegate = undefined;
       const startedAtMs = now();
-      worker = workerFactory(workerUrl, { name: "aerobeat-mediapipe" });
-      worker.onmessage = handleMessage;
-      worker.onerror = handleWorkerError;
-      loading = new Promise((resolve, reject) => { loadResolver = { resolve, reject }; });
       try {
+        worker = workerFactory(workerUrl, { name: "aerobeat-mediapipe" });
+        worker.onmessage = handleMessage;
+        worker.onerror = handleWorkerError;
+        loading = new Promise((resolve, reject) => { loadResolver = { resolve, reject }; });
         worker.postMessage({
           type: "load",
           options: {
@@ -217,6 +217,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
         loadDurationMs = Math.max(0, now() - startedAtMs);
       } catch (error) {
         if (!disposed) fail(readError(error));
+        terminateWorker();
         throw error;
       } finally {
         loading = undefined;
@@ -279,7 +280,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
       activeEstimate = undefined;
       if (!worker) return;
       disposing = new Promise((resolve) => { disposeResolver = resolve; });
-      disposeTimeoutHandle = globalThis.setTimeout(finishDisposal, 1000);
+      disposeTimeoutHandle = globalThis.setTimeout(finishDisposal, 5000);
       try {
         worker.postMessage({ type: "dispose" });
       } catch {

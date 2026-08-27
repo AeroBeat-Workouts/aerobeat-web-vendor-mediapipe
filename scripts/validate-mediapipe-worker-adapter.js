@@ -53,6 +53,21 @@ async function main() {
   assert.equal(firstLoadingFrame.closed, 1);
   await loadingAdapter.dispose();
 
+  const factoryFailureAdapter = createMediaPipeWorkerPoseAdapter({
+    workerFactory() { throw new Error("worker factory rejected"); }
+  });
+  await assert.rejects(factoryFailureAdapter.load(), /worker factory rejected/);
+  assert.equal(factoryFailureAdapter.status, "failed");
+  await factoryFailureAdapter.dispose();
+
+  const postFailureWorker = new FakeWorker();
+  postFailureWorker.postMessage = () => { throw new Error("load post rejected"); };
+  const postFailureAdapter = createMediaPipeWorkerPoseAdapter({ workerFactory: () => postFailureWorker });
+  await assert.rejects(postFailureAdapter.load(), /load post rejected/);
+  assert.equal(postFailureAdapter.status, "failed");
+  assert.equal(postFailureWorker.terminated, 1);
+  await postFailureAdapter.dispose();
+
   let currentTimeMs = 10;
   const worker = new FakeWorker();
   let workerOptions;
