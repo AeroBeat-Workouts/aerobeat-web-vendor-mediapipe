@@ -28,7 +28,7 @@ export const mediaPipeWorkerCapabilities = Object.freeze({
   segmentationMasks: false,
   synchronousInference: false,
   workerInference: true,
-  transferableFrameTypes: Object.freeze(["ImageBitmap"]),
+  transferableFrameTypes: Object.freeze(["ImageBitmap", "VideoFrame"]),
   normalizedLandmarkNames: Object.freeze([
     "nose", "left_shoulder", "right_shoulder", "left_elbow",
     "right_elbow", "left_wrist", "right_wrist"
@@ -130,6 +130,8 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   let postprocessDurationMs;
   /** @type {number | undefined} */
   let workerRoundTripDurationMs;
+  /** @type {"ImageBitmap" | "VideoFrame" | undefined} */
+  let transferFrameType;
   /** @type {string | undefined} */
   let lastError;
 
@@ -150,7 +152,8 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
         estimateDurationMs,
         runtimeInferenceDurationMs,
         postprocessDurationMs,
-        workerRoundTripDurationMs
+        workerRoundTripDurationMs,
+        transferFrameType
       };
     },
     getExecutionStatus() {
@@ -179,6 +182,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
         runtimeInferenceDurationMs,
         postprocessDurationMs,
         workerRoundTripDurationMs,
+        transferFrameType,
         minPoseDetectionConfidence,
         minPosePresenceConfidence,
         minTrackingConfidence,
@@ -226,7 +230,12 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
     },
     async estimateNormalizedPoseFrame(frameSource, estimateOptions = {}) {
       if (disposed) throw new Error("Disposed MediaPipe worker adapter cannot estimate pose.");
-      if (!frameSource) throw new Error("MediaPipe worker estimation requires an ImageBitmap frame source.");
+      if (!frameSource) throw new Error("MediaPipe worker estimation requires an ImageBitmap or VideoFrame frame source.");
+      const candidateTransferFrameType = readTransferFrameType(frameSource);
+      if (!candidateTransferFrameType) {
+        closeFrame(frameSource);
+        throw new Error("MediaPipe worker estimation requires a transferable ImageBitmap or VideoFrame frame source.");
+      }
       if (!Number.isFinite(estimateOptions.timestampMs)) {
         closeFrame(frameSource);
         throw new Error("MediaPipe worker estimation requires the exact capture timestampMs.");
@@ -252,6 +261,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
           type: "estimate",
           requestId: id,
           frameSource,
+          transferFrameType: candidateTransferFrameType,
           metadata: {
             sourceId: estimateOptions.sourceId ?? sourceId,
             timestampMs: estimateOptions.timestampMs,
@@ -259,6 +269,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
           }
         }, [/** @type {Transferable} */ (frameSource)]);
         transferred = true;
+        transferFrameType = candidateTransferFrameType;
         return promise;
       } catch (error) {
         activeEstimate = undefined;
@@ -370,6 +381,18 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
 /** @param {URL} url @param {WorkerOptions} options @returns {WorkerLike} */
 function defaultWorkerFactory(url, options) {
   return /** @type {WorkerLike} */ (new Worker(url, options));
+}
+
+/** @param {unknown} frame @returns {"ImageBitmap" | "VideoFrame" | undefined} */
+function readTransferFrameType(frame) {
+  if (!frame || typeof frame !== "object") return undefined;
+  const videoFrame = Reflect.get(globalThis, "VideoFrame");
+  if (typeof videoFrame === "function" && frame instanceof videoFrame) return "VideoFrame";
+  const imageBitmap = Reflect.get(globalThis, "ImageBitmap");
+  if (typeof imageBitmap === "function" && frame instanceof imageBitmap) return "ImageBitmap";
+  const constructorName = Reflect.get(frame, "constructor")?.name;
+  if (constructorName === "VideoFrame" || constructorName === "ImageBitmap") return constructorName;
+  return undefined;
 }
 
 /** @param {unknown} frame */

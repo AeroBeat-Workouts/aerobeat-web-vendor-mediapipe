@@ -26,17 +26,25 @@ class FakeWorker {
   }
 }
 
-function fakeFrame() {
-  return {
-    closed: 0,
-    close() { this.closed += 1; }
-  };
+class ImageBitmap {
+  closed = 0;
+  close() { this.closed += 1; }
+}
+
+class VideoFrame {
+  closed = 0;
+  close() { this.closed += 1; }
+}
+
+/** @param {"ImageBitmap" | "VideoFrame"} [type] */
+function fakeFrame(type = "ImageBitmap") {
+  return type === "VideoFrame" ? new VideoFrame() : new ImageBitmap();
 }
 
 async function main() {
   assert.equal(mediaPipeWorkerCapabilities.supportsWorker, true);
   assert.equal(mediaPipeWorkerCapabilities.supportsMainThread, false);
-  assert.deepEqual(mediaPipeWorkerCapabilities.transferableFrameTypes, ["ImageBitmap"]);
+  assert.deepEqual(mediaPipeWorkerCapabilities.transferableFrameTypes, ["ImageBitmap", "VideoFrame"]);
 
   const loadingWorker = new FakeWorker();
   const loadingAdapter = createMediaPipeWorkerPoseAdapter({ workerFactory: () => loadingWorker });
@@ -101,6 +109,7 @@ async function main() {
   const estimateMessage = worker.messages.at(-1);
   assert.equal(estimateMessage.message.type, "estimate");
   assert.equal(estimateMessage.message.metadata.timestampMs, 1234);
+  assert.equal(estimateMessage.message.transferFrameType, "ImageBitmap");
   assert.deepEqual(estimateMessage.transfer, [frame]);
 
   const replaced = fakeFrame();
@@ -127,6 +136,28 @@ async function main() {
   assert.equal(result.timestampMs, 1234);
   assert.equal(adapter.getExecutionTelemetry().workerRoundTripDurationMs, 15);
   assert.equal(adapter.getExecutionTelemetry().runtimeInferenceDurationMs, 12);
+  assert.equal(adapter.getExecutionTelemetry().transferFrameType, "ImageBitmap");
+
+  const videoFrame = fakeFrame("VideoFrame");
+  const videoEstimate = adapter.estimateNormalizedPoseFrame(videoFrame, { timestampMs: 1250 });
+  const videoMessage = worker.messages.at(-1);
+  assert.equal(videoMessage.message.metadata.timestampMs, 1250);
+  assert.equal(videoMessage.message.transferFrameType, "VideoFrame");
+  assert.deepEqual(videoMessage.transfer, [videoFrame]);
+  currentTimeMs = 55;
+  worker.emit({
+    type: "result",
+    requestId: videoMessage.message.requestId,
+    frame: { sourceId: "camera.worker", timestampMs: 1250, mirrored: true, landmarks: [] },
+    runtimeInferenceDurationMs: 10,
+    postprocessDurationMs: 0
+  });
+  await videoEstimate;
+  assert.equal(adapter.getExecutionTelemetry().transferFrameType, "VideoFrame");
+
+  const unsupportedFrame = { closed: 0, close() { this.closed += 1; } };
+  await assert.rejects(adapter.estimateNormalizedPoseFrame(unsupportedFrame, { timestampMs: 1251 }), /transferable ImageBitmap or VideoFrame/);
+  assert.equal(unsupportedFrame.closed, 1);
 
   const missingTimestampFrame = fakeFrame();
   await assert.rejects(adapter.estimateNormalizedPoseFrame(missingTimestampFrame), /exact capture timestampMs/);
@@ -141,6 +172,28 @@ async function main() {
   assert.equal(worker.terminated, 1);
   assert.equal(adapter.status, "disposed");
   await assert.rejects(adapter.load(), /Disposed/);
+
+  const disposingWorker = new FakeWorker();
+  const disposingAdapter = createMediaPipeWorkerPoseAdapter({ workerFactory: () => disposingWorker });
+  const disposingLoad = disposingAdapter.load();
+  disposingWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
+  await disposingLoad;
+  const disposingFrame = fakeFrame("VideoFrame");
+  const disposedEstimate = disposingAdapter.estimateNormalizedPoseFrame(disposingFrame, { timestampMs: 2000 });
+  const disposedRequestId = disposingWorker.messages.at(-1).message.requestId;
+  const activeDisposal = disposingAdapter.dispose();
+  await assert.rejects(disposedEstimate, /disposed during inference/);
+  disposingWorker.emit({
+    type: "result",
+    requestId: disposedRequestId,
+    frame: { sourceId: "late", timestampMs: 2000, mirrored: true, landmarks: [] },
+    runtimeInferenceDurationMs: 1,
+    postprocessDurationMs: 0
+  });
+  disposingWorker.emit({ type: "disposed" });
+  await activeDisposal;
+  assert.equal(disposingAdapter.status, "disposed");
+  assert.equal(disposingWorker.terminated, 1);
 
   const failedWorker = new FakeWorker();
   const failedAdapter = createMediaPipeWorkerPoseAdapter({ workerFactory: () => failedWorker });
