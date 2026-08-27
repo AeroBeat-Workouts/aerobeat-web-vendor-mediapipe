@@ -7,12 +7,13 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "check": "npm run check:types && npm run check:jsdoc && npm run check:imports && npm run check:components && npm run check:mediapipe",
-    "check:types": "tsc --noEmit --allowJs --checkJs --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM src/index.js src/mediapipe-adapter.js src/mediapipe-normalize.js",
+    "check": "npm run check:types && npm run check:jsdoc && npm run check:imports && npm run check:components && npm run check:mediapipe && npm run check:worker",
+    "check:types": "tsc --noEmit --allowJs --checkJs --skipLibCheck --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM,WebWorker src/index.js src/mediapipe-adapter.js src/mediapipe-worker-adapter.js src/mediapipe-worker.js src/mediapipe-normalize.js",
     "check:jsdoc": "node scripts/validate-jsdoc-no-any.js",
     "check:imports": "node scripts/validate-public-imports.js",
     "check:components": "node scripts/validate-component-rules.js",
     "check:mediapipe": "node scripts/validate-mediapipe-adapter.js",
+    "check:worker": "node scripts/validate-mediapipe-worker-adapter.js",
     "test": "npm run check",
     "test:browser": "node scripts/validate-browser-smoke.js",
     "demo": "npm --prefix .testbed run demo",

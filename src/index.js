@@ -20,3 +20,9 @@ export {
   mediaPipeReplayModel,
   mediaPipeVendorId
 } from "./mediapipe-adapter.js";
+
+export {
+  createMediaPipeWorkerPoseAdapter,
+  mediaPipeDefaultWorkerTasksVisionScriptUrl,
+  mediaPipeWorkerCapabilities
+} from "./mediapipe-worker-adapter.js";

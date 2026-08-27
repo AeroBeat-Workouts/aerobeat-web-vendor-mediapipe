@@ -23,7 +23,8 @@ No model or WASM binary is committed. Both URLs are injectable so assembly/relea
 
 `src/index.js` exports:
 
-- `createMediaPipePoseAdapter()` for the real browser runtime.
+- `createMediaPipePoseAdapter()` for the recommended direct main-thread runtime.
+- `createMediaPipeWorkerPoseAdapter()` for the explicit experimental dedicated-worker runtime.
 - `createMediaPipeMockPoseAdapter()` and `createMediaPipeReplayPoseSource()` for deterministic tests and fallback proving flows.
 - stable vendor/model/delegate/status constants and plain capabilities.
 
@@ -45,7 +46,13 @@ Normalized output contains only nose, shoulders, elbows, and wrists, using names
 
 The adapter reports selected and actual delegates distinctly. It does not claim WebGPU support and performs no silent delegate fallback. A failed delegate load is reported as failed so the caller can make an explicit backend decision.
 
-Defaults are `runningMode: "VIDEO"`, `numPoses: 1`, `outputSegmentationMasks: false`, and `0.5` for pose-detection, pose-presence, and tracking confidence. All three confidence thresholds are injectable at creation time, must be finite values in `[0,1]`, reach Pose Landmarker options exactly, and appear in plain telemetry/detail for reproducible tuning. `detectForVideo()` is synchronous on the calling thread. AeroBeat therefore must keep its existing bounded submission cadence; this package does not pretend the call is worker-isolated. Inference timestamps use an injectable monotonic clock and are forced strictly increasing, while output timestamps preserve capture/source truth.
+Defaults are `runningMode: "VIDEO"`, `numPoses: 1`, `outputSegmentationMasks: false`, and `0.5` for pose-detection, pose-presence, and tracking confidence. All three confidence thresholds are injectable at creation time, must be finite values in `[0,1]`, reach Pose Landmarker options exactly, and appear in plain telemetry/detail for reproducible tuning. `detectForVideo()` is synchronous on the thread that owns the task. The direct adapter therefore blocks the main thread; the experimental worker adapter confines that call to its worker. Inference timestamps use an injectable monotonic clock and are forced strictly increasing, while output timestamps preserve capture/source truth.
+
+## Experimental Worker Runtime
+
+`createMediaPipeWorkerPoseAdapter()` accepts one transferable `ImageBitmap` estimate at a time and requires the exact capture timestamp paired with that bitmap. It reports actual worker location and the configured delegate only after Pose Landmarker creation succeeds, performs no silent fallback, closes accepted frames in the worker, rejects/closes concurrent submissions, and disposes the task/worker terminally.
+
+Tasks Vision 1.0.1 cannot create Pose Landmarker from an ES module worker in the tested Chromium path: its Emscripten loader fails with `ModuleFactory not set.` because it depends on `importScripts`. The experiment therefore uses an import-free classic worker bootstrap and an injectable, version-pinned Tasks Vision bundle URL. Self-host that bundle alongside the existing injectable WASM/model assets for release use. CPU-WASM and GPU-WebGL worker capability still require actual browser/device proof; requested configuration alone is never reported as an active provider.
 
 ## Confidence Semantics
 
