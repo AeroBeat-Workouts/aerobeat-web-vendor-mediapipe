@@ -38,6 +38,21 @@ async function main() {
   assert.equal(mediaPipeWorkerCapabilities.supportsMainThread, false);
   assert.deepEqual(mediaPipeWorkerCapabilities.transferableFrameTypes, ["ImageBitmap"]);
 
+  const loadingWorker = new FakeWorker();
+  const loadingAdapter = createMediaPipeWorkerPoseAdapter({ workerFactory: () => loadingWorker });
+  const firstLoadingFrame = fakeFrame();
+  const estimateDuringLoad = loadingAdapter.estimateNormalizedPoseFrame(firstLoadingFrame, { timestampMs: 100 });
+  const concurrentLoadingFrame = fakeFrame();
+  await assert.rejects(
+    loadingAdapter.estimateNormalizedPoseFrame(concurrentLoadingFrame, { timestampMs: 101 }),
+    /only one loading or in-flight/
+  );
+  assert.equal(concurrentLoadingFrame.closed, 1);
+  loadingWorker.emit({ type: "error", error: "load rejected" });
+  await assert.rejects(estimateDuringLoad, /load rejected/);
+  assert.equal(firstLoadingFrame.closed, 1);
+  await loadingAdapter.dispose();
+
   let currentTimeMs = 10;
   const worker = new FakeWorker();
   let workerOptions;
@@ -76,7 +91,7 @@ async function main() {
   const replaced = fakeFrame();
   await assert.rejects(
     adapter.estimateNormalizedPoseFrame(replaced, { timestampMs: 1267 }),
-    /only one in-flight/
+    /only one loading or in-flight/
   );
   assert.equal(replaced.closed, 1);
 

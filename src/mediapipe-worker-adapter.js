@@ -105,6 +105,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   let terminated = false;
   let requestId = 0;
   let generation = 0;
+  let estimatePreparing = false;
   /** @type {Promise<void> | undefined} */
   let loading;
   /** @type {{ id: number, generation: number, startedAtMs: number, resolve: (frame: import("@aerobeat/web-contracts/pose-shapes").NormalizedPoseFrame) => void, reject: (error: Error) => void } | undefined} */
@@ -229,22 +230,23 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
         closeFrame(frameSource);
         throw new Error("MediaPipe worker estimation requires the exact capture timestampMs.");
       }
-      if (activeEstimate) {
+      if (estimatePreparing || activeEstimate) {
         closeFrame(frameSource);
-        throw new Error("MediaPipe worker adapter accepts only one in-flight estimate.");
+        throw new Error("MediaPipe worker adapter accepts only one loading or in-flight estimate.");
       }
-      if (status !== mediaPipeAdapterStatuses.ready) await adapter.load();
-      if (!worker || status !== mediaPipeAdapterStatuses.ready) {
-        closeFrame(frameSource);
-        throw new Error("MediaPipe worker unavailable after load.");
-      }
-      const id = ++requestId;
-      const acceptedGeneration = generation;
-      const startedAtMs = now();
-      const promise = new Promise((resolve, reject) => {
-        activeEstimate = { id, generation: acceptedGeneration, startedAtMs, resolve, reject };
-      });
+      estimatePreparing = true;
+      let transferred = false;
       try {
+        if (status !== mediaPipeAdapterStatuses.ready) await adapter.load();
+        if (!worker || status !== mediaPipeAdapterStatuses.ready) {
+          throw new Error("MediaPipe worker unavailable after load.");
+        }
+        const id = ++requestId;
+        const acceptedGeneration = generation;
+        const startedAtMs = now();
+        const promise = new Promise((resolve, reject) => {
+          activeEstimate = { id, generation: acceptedGeneration, startedAtMs, resolve, reject };
+        });
         worker.postMessage({
           type: "estimate",
           requestId: id,
@@ -255,12 +257,15 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
             mirrored: estimateOptions.mirrored ?? mirrored
           }
         }, [/** @type {Transferable} */ (frameSource)]);
+        transferred = true;
+        return promise;
       } catch (error) {
         activeEstimate = undefined;
-        closeFrame(frameSource);
+        if (!transferred) closeFrame(frameSource);
         throw error;
+      } finally {
+        estimatePreparing = false;
       }
-      return promise;
     },
     async dispose() {
       if (disposing) return disposing;
