@@ -3,9 +3,11 @@
 /**
  * Classic worker bootstrap for Tasks Vision 1.0.1.
  *
- * That release's Emscripten loader uses importScripts and fails from a module
- * worker with `ModuleFactory not set.`. Keeping this file import-free lets Vite
- * emit a classic worker while the pinned UMD bundle supplies `globalThis.Vision`.
+ * This adapter deliberately uses the supported IIFE/classic-loader path. Tasks
+ * Vision also supports a module worker when forVisionTasks(path, true) selects
+ * its module loader; using the classic loader inside a module worker instead
+ * reproduces `ModuleFactory not set.`. Keeping this file import-free lets Vite
+ * emit a classic worker while the pinned IIFE supplies `globalThis.Vision`.
  */
 
 /** @type {{ detectForVideo: (frame: TexImageSource, timestampMs: number) => MediaPipePoseResultLike, close: () => void } | undefined} */
