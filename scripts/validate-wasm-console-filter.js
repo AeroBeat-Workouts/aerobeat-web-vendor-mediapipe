@@ -9,9 +9,15 @@ import {
 import { createMediaPipePoseAdapterFromRuntime } from "../src/mediapipe-adapter.js";
 
 const signatures = mediaPipeWasmConsoleSignatures;
+// The shipped XNNPACK signature is the marker-free substring "XNNPACK
+// delegate for CPU." (the release integrity gate forbids the literal
+// runtime-name in shipped JS). The oracle is dev-only (not bundled into the
+// release), so it additionally proves the REAL full browser log line — which
+// contains the substring — still drops.
+const realXnnpackLogLine = "Created TensorFlow Lite XNNPACK delegate for CPU.";
 assert.deepEqual(signatures, [
   "OpenGL error checking is disabled",
-  "Created TensorFlow Lite XNNPACK delegate for CPU.",
+  "XNNPACK delegate for CPU.",
   "Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.",
   "Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX."
 ]);
@@ -63,6 +69,11 @@ try {
     }
   }
   assert.equal(delivered.length, 0, `no signature message may reach any wrapped level; got: ${JSON.stringify(delivered)}`);
+
+  // 1b. The REAL full XNNPACK browser log line (which contains the
+  // marker-free substring signature) must also drop at error level.
+  console.error(realXnnpackLogLine);
+  assert.equal(delivered.length, 0, `the real XNNPACK log line must drop; got: ${JSON.stringify(delivered)}`);
 
   // 2. A non-matching message passes through unchanged with the same args.
   const args = ["hello", 42, { ok: true }];

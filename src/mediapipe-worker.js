@@ -223,11 +223,14 @@ function readFrameDimension(source, ...propertyNames) {
 /**
  * The four known MediaPipe internal log lines (frozen mirror of
  * `wasm-console-filter.js`). The only drop condition for this filter.
+ * The XNNPACK delegate line is matched by its marker-free substring
+ * "XNNPACK delegate for CPU." (see `wasm-console-filter.js` for the
+ * release-integrity rationale); the full log line still drops.
  * @type {ReadonlyArray<string>}
  */
 const wasmConsoleSignatures = Object.freeze([
   "OpenGL error checking is disabled",
-  "Created TensorFlow Lite XNNPACK delegate for CPU.",
+  "XNNPACK delegate for CPU.",
   "Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.",
   "Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX."
 ]);

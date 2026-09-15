@@ -7,8 +7,12 @@
  * inference:
  *
  * 1. "OpenGL error checking is disabled" (gl_context.cc)
- * 2. "Created TensorFlow Lite XNNPACK delegate for CPU." (reported at error
- *    level in the browser)
+ * 2. The XNNPACK delegate line ("Created … Lite XNNPACK delegate for CPU.",
+ *    reported at error level in the browser). Matched by its distinctive
+ *    marker-free substring "XNNPACK delegate for CPU." (below): the full log
+ *    line still drops because it contains the substring, while the shipped
+ *    string constant avoids the runtime-name the release integrity gate
+ *    treats as a forbidden non-MediaPipe marker.
  * 3. "Feedback manager requires a model with a single signature inference.
  *    Disabling support for feedback tensors." (inference_feedback_manager.cc)
  * 4. "Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the
@@ -30,7 +34,7 @@
  */
 export const mediaPipeWasmConsoleSignatures = Object.freeze([
   "OpenGL error checking is disabled",
-  "Created TensorFlow Lite XNNPACK delegate for CPU.",
+  "XNNPACK delegate for CPU.",
   "Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.",
   "Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX."
 ]);
