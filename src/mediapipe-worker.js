@@ -10,10 +10,26 @@
  * emit a classic worker while the pinned IIFE supplies `globalThis.Vision`.
  */
 
-/** @type {{ detectForVideo: (frame: TexImageSource, timestampMs: number) => MediaPipePoseResultLike, close: () => void } | undefined} */
+/**
+ * @type {{
+ *   detectForVideo: (
+ *     frame: TexImageSource,
+ *     timestampMs: number,
+ *     imageProcessingOptions?: { IMAGE_DIMENSIONS: { height: number, width: number } }
+ *   ) => MediaPipePoseResultLike,
+ *   close: () => void
+ * } | undefined}
+ */
 let poseLandmarker;
 let lastVideoTimestampMs = Number.NEGATIVE_INFINITY;
 let disposed = false;
+
+// Drop the four known MediaPipe WASM internal log lines in the worker
+// console. This file is deliberately import-free (classic worker), so the
+// install is the self-contained mirror of `wasm-console-filter.js`: same
+// frozen signatures, idempotent single global wrap, everything else passes
+// through untouched.
+installWorkerWasmConsoleFilter();
 
 self.onmessage = async (event) => {
   const message = event.data ?? {};
@@ -57,7 +73,10 @@ self.onmessage = async (event) => {
     try {
       const inferenceTimestampMs = nextMonotonicTimestamp(now(), lastVideoTimestampMs);
       lastVideoTimestampMs = inferenceTimestampMs;
-      const result = poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs);
+      const imageProcessingOptions = imageDimensionsForFrame(frameSource);
+      const result = imageProcessingOptions === undefined
+        ? poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs)
+        : poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs, imageProcessingOptions);
       runtimeFinishedAtMs = now();
       const frame = normalizePoseFrame(result, message.metadata);
       const finishedAtMs = now();
@@ -165,3 +184,99 @@ function readError(error) { return error instanceof Error ? error.message : Stri
 /** @param {number} value */
 function clamp01(value) { return Math.min(1, Math.max(0, value)); }
 function now() { return globalThis.performance?.now?.() ?? Date.now(); }
+
+/**
+ * Passes the actual frame pixel dimensions to the landmarker as
+ * `IMAGE_DIMENSIONS: {height, width}` in the `detectForVideo` image
+ * processing options, so the "NORM_RECT without IMAGE_DIMENSIONS" warning is
+ * fixed at source. The pinned `@mediapipe/tasks-vision@1.0.1`
+ * `ImageProcessingOptions` type declares only `regionOfInterest`/
+ * `rotationDegrees`; `IMAGE_DIMENSIONS` is the documented MediaPipe
+ * side-channel name (later releases type it explicitly) and unknown keys are
+ * ignored by the pinned runtime. When no dimensions can be read, nothing is
+ * passed so the call shape is unchanged.
+ *
+ * @param {TexImageSource} frameSource
+ * @returns {{ IMAGE_DIMENSIONS: { height: number, width: number } } | undefined}
+ */
+function imageDimensionsForFrame(frameSource) {
+  if (!frameSource || typeof frameSource !== "object") return undefined;
+  const width = readFrameDimension(frameSource, "videoWidth", "displayWidth", "width");
+  const height = readFrameDimension(frameSource, "videoHeight", "displayHeight", "height");
+  if (width === undefined || height === undefined) return undefined;
+  return { IMAGE_DIMENSIONS: { height, width } };
+}
+
+/** @param {object} source @param {...string} propertyNames @returns {number | undefined} */
+function readFrameDimension(source, ...propertyNames) {
+  for (const propertyName of propertyNames) {
+    const value = Reflect.get(source, propertyName);
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  }
+  return undefined;
+}
+
+/**
+ * @typedef {("log" | "info" | "warn" | "error") & keyof Console} WasmConsoleLevel
+ */
+
+/**
+ * The four known MediaPipe internal log lines (frozen mirror of
+ * `wasm-console-filter.js`). The only drop condition for this filter.
+ * @type {ReadonlyArray<string>}
+ */
+const wasmConsoleSignatures = Object.freeze([
+  "OpenGL error checking is disabled",
+  "Created TensorFlow Lite XNNPACK delegate for CPU.",
+  "Feedback manager requires a model with a single signature inference. Disabling support for feedback tensors.",
+  "Using NORM_RECT without IMAGE_DIMENSIONS is only supported for the square ROI. Provide IMAGE_DIMENSIONS or use PROJECTION_MATRIX."
+]);
+
+/** @param {unknown} value @returns {string} */
+function stringifyConsoleArgument(value) {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "object" || typeof value === "function") {
+    try { return JSON.stringify(value); } catch { return String(value); }
+  }
+  return String(value);
+}
+
+/** @param {readonly unknown[]} args @returns {boolean} */
+function containsWasmSignature(args) {
+  for (const argument of args) {
+    const text = stringifyConsoleArgument(argument);
+    for (const signature of wasmConsoleSignatures) {
+      if (text.includes(signature)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Idempotent single global console wrap in the worker: drops only the four
+ * known MediaPipe internal lines, forwards everything else with the same
+ * `this` and args.
+ */
+function installWorkerWasmConsoleFilter() {
+  const targetConsole = globalThis.console;
+  if (!targetConsole || Object.isFrozen(targetConsole)) return;
+  const installedMarker =
+    Object.getOwnPropertyDescriptor(targetConsole.log, "__aeroWasmConsoleFilter")?.value;
+  if (targetConsole.log && installedMarker === true) return;
+  /** @type {ReadonlyArray<"log" | "info" | "warn" | "error">} */
+  const levels = Object.freeze(["log", "info", "warn", "error"]);
+  for (const level of levels) {
+    const original = targetConsole[level];
+    if (typeof original !== "function") continue;
+    const wrapped = function (...args) {
+      if (!containsWasmSignature(args)) return Reflect.apply(original, this, args);
+    };
+    try {
+      Object.defineProperty(targetConsole, level, { configurable: true, enumerable: false, value: wrapped });
+      Object.defineProperty(wrapped, "__aeroWasmConsoleFilter", { value: true });
+    } catch {
+      // Frozen/non-writable console slot: skip that level rather than fail.
+    }
+  }
+}

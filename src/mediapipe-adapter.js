@@ -1,6 +1,7 @@
 // @ts-check
 
 import { clonePoseFrame, normalizeMediaPipePoseFrame } from "./mediapipe-normalize.js";
+import { installMediaPipeWasmConsoleFilter } from "./wasm-console-filter.js";
 
 /** @type {"mediapipe"} */
 export const mediaPipeVendorId = "mediapipe";
@@ -158,7 +159,7 @@ export const mediaPipeReplayCapabilities = Object.freeze({
 
 /**
  * @typedef {Object} PoseLandmarkerLike
- * @property {(frameSource: MediaPipeFrameSource, timestampMs: number) => import("./mediapipe-normalize.js").MediaPipePoseResultLike} detectForVideo Runs synchronous video inference.
+ * @property {(frameSource: MediaPipeFrameSource, timestampMs: number, imageProcessingOptions?: { IMAGE_DIMENSIONS: { height: number, width: number } }) => import("./mediapipe-normalize.js").MediaPipePoseResultLike} detectForVideo Runs synchronous video inference; the optional image-processing options carry `IMAGE_DIMENSIONS` for the landmark projection calculator.
  * @property {() => void} close Releases MediaPipe resources.
  */
 
@@ -234,6 +235,10 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
     "minTrackingConfidence"
   );
   const now = options.now ?? defaultNow;
+
+  // Drop the four known MediaPipe WASM internal log lines before they can
+  // reach the app console; idempotent, so re-creation is a no-op.
+  installMediaPipeWasmConsoleFilter();
 
   /** @type {"idle" | "loading" | "ready" | "failed" | "disposed"} */
   let status = mediaPipeAdapterStatuses.idle;
@@ -388,7 +393,10 @@ export function createMediaPipePoseAdapterFromRuntime(loadRuntime, options = {})
       /** @type {number | undefined} */
       let runtimeFinishedAtMs;
       try {
-        const result = poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs);
+        const imageProcessingOptions = mediaPipeImageDimensionsFor(frameSource);
+        const result = imageProcessingOptions === undefined
+          ? poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs)
+          : poseLandmarker.detectForVideo(frameSource, inferenceTimestampMs, imageProcessingOptions);
         runtimeFinishedAtMs = now();
         runtimeInferenceDurationMs = Math.max(0, runtimeFinishedAtMs - startedAtMs);
         const frame = normalizeMediaPipePoseFrame(result, {
@@ -571,6 +579,55 @@ function readMediaCurrentTime(frameSource) {
   return "currentTime" in frameSource && typeof frameSource.currentTime === "number"
     ? frameSource.currentTime
     : undefined;
+}
+
+/**
+ * Builds the PoseLandmarker `detectForVideo` image-processing options carrying
+ * the actual video-frame pixel dimensions as `IMAGE_DIMENSIONS: {height,
+ * width}` so the landmark projection calculator is told the real input aspect
+ * and its "NORM_RECT without IMAGE_DIMENSIONS is only supported for the
+ * square ROI" warning is eliminated at source (the vendor console filter
+ * remains defense-in-depth).
+ *
+ * The pinned `@mediapipe/tasks-vision@1.0.1` `ImageProcessingOptions` type
+ * declares only `regionOfInterest` and `rotationDegrees`; `IMAGE_DIMENSIONS`
+ * is the documented MediaPipe side-channel name (later releases type it
+ * explicitly). Unknown keys are ignored by the pinned runtime — it only reads
+ * `regionOfInterest`/`rotationDegrees` — so this is a zero-risk annotation
+ * that the W1-D plan names as the at-source fix, with the filter as the
+ * guaranteed backstop.
+ *
+ * When no frame dimensions can be read, no options object is passed at all so
+ * the runtime sees exactly the pre-change call shape.
+ *
+ * @param {MediaPipeFrameSource} frameSource
+ * @returns {{ IMAGE_DIMENSIONS: { height: number, width: number } } | undefined}
+ */
+function mediaPipeImageDimensionsFor(frameSource) {
+  if (!frameSource || typeof frameSource !== "object") return undefined;
+  /** @type {unknown} */
+  const source = frameSource;
+  const width = readFrameDimension(source, "videoWidth", "displayWidth", "width");
+  const height = readFrameDimension(source, "videoHeight", "displayHeight", "height");
+  if (width === undefined || height === undefined) return undefined;
+  return { IMAGE_DIMENSIONS: { height, width } };
+}
+
+/**
+ * Reads the first finite positive dimension from the listed properties.
+ *
+ * @param {object} source
+ * @param {...string} propertyNames
+ * @returns {number | undefined}
+ */
+function readFrameDimension(source, ...propertyNames) {
+  for (const propertyName of propertyNames) {
+    const value = Reflect.get(source, propertyName);
+    if (typeof value === "number" && Number.isInteger(value) && value > 0) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 /**

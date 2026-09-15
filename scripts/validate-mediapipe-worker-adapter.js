@@ -27,11 +27,15 @@ class FakeWorker {
 }
 
 class ImageBitmap {
+  width = 640;
+  height = 480;
   closed = 0;
   close() { this.closed += 1; }
 }
 
 class VideoFrame {
+  displayWidth = 1280;
+  displayHeight = 720;
   closed = 0;
   close() { this.closed += 1; }
 }
