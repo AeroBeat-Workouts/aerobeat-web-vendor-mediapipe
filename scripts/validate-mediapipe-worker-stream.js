@@ -22,10 +22,11 @@ async function waitFor(predicate) {
   throw new Error("Worker did not reach expected state");
 }
 
-function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = false, rejectCreation = false, fetchFailure = false, urlMode = false, gpu = false } = {}) {
+function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = false, disposeDuringFetch = false, rejectCreation = false, fetchFailure = false, urlMode = false, gpu = false, buffered = false } = {}) {
   const messages = [];
-  const calls = { fetch: 0, resolver: 0, create: 0, closed: 0, canceled: 0, sourceRead: 0 };
+  const calls = { fetch: 0, resolver: 0, create: 0, closed: 0, canceled: 0, sourceRead: 0, events: [] };
   let releaseRead;
+  let releaseFetch;
   let creationOptions;
   const self = {
     location: { href: `${origin}/worker.js`, origin },
@@ -34,16 +35,18 @@ function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = f
   };
   const Vision = {
     FilesetResolver: {
-      async forVisionTasks() { calls.resolver++; return {}; }
+      async forVisionTasks() { calls.resolver++; calls.events.push("resolver"); return {}; }
     },
     PoseLandmarker: {
       async createFromOptions(_files, supplied) {
         calls.create++;
+        calls.events.push("create");
         creationOptions = supplied;
         if (rejectCreation) throw Error("creation failed");
         if (supplied.baseOptions.modelAssetBuffer) {
-          const reader = supplied.baseOptions.modelAssetBuffer;
-          while (true) { const result = await reader.read(); if (result.done) break; }
+          const buffer = supplied.baseOptions.modelAssetBuffer;
+          if (buffer instanceof Uint8Array) assert.deepEqual(buffer, bytes);
+          else while (true) { const result = await buffer.read(); if (result.done) break; }
         }
         return { close() { calls.closed++; } };
       }
@@ -56,7 +59,9 @@ function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = f
     importScripts() { sandbox.Vision = Vision; },
     async fetch(url, init) {
       calls.fetch++;
+      calls.events.push("fetch");
       assert.equal(url, `${origin}/model.task`);
+      if (disposeDuringFetch) await new Promise((resolve) => { releaseFetch = resolve; });
       if (fetchFailure) return { ok: false, status: 503, body: null };
       let index = 0;
       return {
@@ -66,7 +71,7 @@ function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = f
             calls.sourceRead++;
             if (disposeDuringRead && index === 1) await new Promise((resolve) => { releaseRead = resolve; });
             if (init.signal.aborted) { controller.error(Error("aborted")); return; }
-            if (index === chunks.length) { controller.close(); return; }
+            if (index === chunks.length) { calls.events.push("eof"); controller.close(); return; }
             controller.enqueue(chunks[index++]);
           },
           cancel() { calls.canceled++; }
@@ -79,9 +84,10 @@ function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = f
   const load = self.onmessage({ data: { type: "load", options: {
     ...options, modelSha256: expectedHash,
     ...(urlMode ? { streamModelDownload: false } : {}),
-    ...(gpu ? { delegate: "gpu-webgl" } : {})
+    ...(gpu ? { delegate: "gpu-webgl" } : {}),
+    ...(buffered ? { bufferModelDownload: true, streamModelDownload: false } : {})
   } } });
-  return { self, load, messages, calls, get creationOptions() { return creationOptions; }, release() { releaseRead?.(); } };
+  return { self, load, messages, calls, get creationOptions() { return creationOptions; }, release() { releaseRead?.(); releaseFetch?.(); } };
 }
 
 {
@@ -121,7 +127,53 @@ for (const variation of [
   assert.equal(run.messages.some((message) => message.type === "loaded"), false);
   assert.equal(run.messages.some((message) => message.type === "disposed"), true);
 }
-for (const variant of [{ urlMode: true }, { gpu: true }]) {
+{
+  const run = scenario({ buffered: true, chunks: [bytes.subarray(0, 2), bytes.subarray(2)] });
+  await run.load;
+  assert.equal(run.calls.fetch, 1);
+  assert.deepEqual(run.calls.events, ["fetch", "eof", "resolver", "create"]);
+  assert.equal(run.creationOptions.baseOptions.modelAssetPath, undefined);
+  assert.equal(run.creationOptions.baseOptions.modelAssetBuffer.constructor.name, "Uint8Array");
+  assert.deepEqual(run.messages.filter((message) => message.type === "model-download-progress").map(({ receivedBytes, verified }) => [receivedBytes, verified]), [[2, false], [6, false], [6, true]]);
+  assert.equal(run.messages.at(-1).type, "loaded");
+  await run.self.onmessage({ data: { type: "dispose" } });
+  assert.equal(run.calls.closed, 1);
+}
+for (const variation of [
+  { chunks: [bytes.subarray(0, 3)] },
+  { chunks: [new Uint8Array([...bytes, 7])] },
+  { expectedHash: "0".repeat(64) },
+  { fetchFailure: true },
+  { rejectCreation: true }
+]) {
+  const run = scenario({ buffered: true, ...variation });
+  await run.load;
+  assert.equal(run.calls.fetch, 1);
+  assert.equal(run.messages.some((message) => message.type === "loaded"), false);
+  assert.equal(run.messages.some((message) => message.type === "error"), true);
+  if (!variation.rejectCreation) assert.equal(run.calls.create, 0);
+}
+{
+  const run = scenario({ buffered: true, chunks: [bytes.subarray(0, 2), bytes.subarray(2)], disposeDuringRead: true });
+  await waitFor(() => run.calls.sourceRead === 2);
+  await run.self.onmessage({ data: { type: "dispose" } });
+  run.release();
+  await run.load;
+  assert.equal(run.calls.create, 0);
+  assert.equal(run.messages.some((message) => message.type === "loaded"), false);
+  assert.equal(run.messages.some((message) => message.type === "disposed"), true);
+}
+{
+  const run = scenario({ buffered: true, disposeDuringFetch: true });
+  await waitFor(() => run.calls.fetch === 1);
+  await run.self.onmessage({ data: { type: "dispose" } });
+  run.release();
+  await run.load;
+  assert.equal(run.calls.create, 0);
+  assert.equal(run.messages.some((message) => message.type === "loaded"), false);
+  assert.equal(run.messages.some((message) => message.type === "disposed"), true);
+}
+for (const variant of [{ urlMode: true }, { gpu: true }, { gpu: true, buffered: true }]) {
   const run = scenario(variant);
   await run.load;
   assert.equal(run.calls.fetch, 0);

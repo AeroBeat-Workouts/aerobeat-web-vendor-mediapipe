@@ -45,16 +45,22 @@ self.onmessage = async (event) => {
       const tasksVision = loadTasksVision(options.tasksVisionScriptUrl);
       if (disposed) return;
       const streaming = options.streamModelDownload === true && options.delegate === "cpu-wasm";
-      // Start the single model GET after Vision import. Only headers gate the
-      // resolver; MediaPipe consumes the reader while initializing WASM.
+      const buffering = options.bufferModelDownload === true && options.delegate === "cpu-wasm";
+      if (streaming && buffering) throw new Error("Model download strategies are mutually exclusive");
+      // Buffer mode finishes and verifies the model GET before the resolver/task
+      // may start WASM. Stream mode retains its existing concurrent reader path.
+      const buffer = buffering ? await bufferModelDownload(options) : undefined;
+      if (disposed) return;
       const download = streaming ? await startModelDownload(options) : undefined;
       if (disposed) return;
       const visionFiles = await tasksVision.FilesetResolver.forVisionTasks(options.wasmRootUrl);
       if (disposed) return;
       loaded = await tasksVision.PoseLandmarker.createFromOptions(visionFiles, {
-        baseOptions: streaming
-          ? { modelAssetBuffer: download.reader, delegate: "CPU" }
-          : { modelAssetPath: options.modelUrl, delegate: options.delegate === "gpu-webgl" ? "GPU" : "CPU" },
+        baseOptions: buffering
+          ? { modelAssetBuffer: buffer, delegate: "CPU" }
+          : streaming
+            ? { modelAssetBuffer: download.reader, delegate: "CPU" }
+            : { modelAssetPath: options.modelUrl, delegate: options.delegate === "gpu-webgl" ? "GPU" : "CPU" },
         runningMode: "VIDEO",
         numPoses: 1,
         outputSegmentationMasks: false,
@@ -240,6 +246,77 @@ async function startModelDownload(options) {
     }
   }, { highWaterMark: 0 });
   return { reader: observed.getReader(), integrity };
+}
+
+/**
+ * Worker-owned reader: verify the complete decoded model before asking Tasks
+ * Vision to initialize WASM or construct the task. Never hand it a live reader.
+ * @param {{ modelUrl: string, modelSizeBytes: number, modelSha256: string }} options
+ * @returns {Promise<Uint8Array>}
+ */
+async function bufferModelDownload(options) {
+  if (!Number.isSafeInteger(options.modelSizeBytes) || options.modelSizeBytes <= 0 ||
+    !/^[a-f\d]{64}$/i.test(options.modelSha256)) throw new Error("Model buffer requires pinned SHA-256 and decoded size");
+  const url = new URL(options.modelUrl, self.location.href);
+  if (url.origin !== self.location.origin || !/^https?:$/.test(url.protocol)) {
+    throw new Error("Model buffer requires a same-origin HTTP(S) URL");
+  }
+  const abort = new AbortController();
+  modelDownloadAbort = abort;
+  /** @type {ReadableStreamDefaultReader<Uint8Array> | undefined} */
+  let reader;
+  let complete = false;
+  try {
+    const response = await fetch(url.href, { signal: abort.signal });
+    if (disposed || abort.signal.aborted) {
+      await response.body?.cancel();
+      throw new Error("Model download canceled");
+    }
+    if (!response.ok || !response.body || response.type === "opaque") {
+      throw new Error(`Model buffer GET failed: ${response.status}`);
+    }
+    reader = response.body.getReader();
+    cancelModelDownload = async () => {
+      abort.abort();
+      try { await reader?.cancel(); } catch { /* Already completed or errored. */ }
+    };
+    /** @type {Uint8Array[]} */
+    const chunks = [];
+    let receivedBytes = 0;
+    while (true) {
+      if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+      const result = await reader.read();
+      if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+      if (result.done) break;
+      const chunk = result.value;
+      if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0 ||
+        chunk.byteLength > options.modelSizeBytes - receivedBytes) {
+        throw new Error("Decoded model length exceeded pinned size or invalid buffer chunk");
+      }
+      // Own only the bounded decoded bytes; copy to detach from source buffers.
+      chunks.push(chunk.slice());
+      receivedBytes += chunk.byteLength;
+      self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: false });
+    }
+    if (receivedBytes !== options.modelSizeBytes) throw new Error("Decoded model length differs from pinned size");
+    const bytes = new Uint8Array(receivedBytes);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+      .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+    if (hash !== options.modelSha256.toLowerCase()) throw new Error("Model SHA-256 mismatch");
+    complete = true;
+    self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: true });
+    return bytes;
+  } finally {
+    if (!complete) {
+      abort.abort();
+      try { await reader?.cancel(); } catch { /* Already completed or errored. */ }
+    }
+    cancelModelDownload = undefined;
+    modelDownloadAbort = undefined;
+  }
 }
 
 /** @type {ReadonlyArray<Readonly<{ index: number, name: string }>>} */

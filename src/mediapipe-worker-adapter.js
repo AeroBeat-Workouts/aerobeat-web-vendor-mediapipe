@@ -55,7 +55,8 @@ export const mediaPipeWorkerCapabilities = Object.freeze({
  * @property {string} [modelName]
  * @property {string} [modelSha256]
  * @property {number} [modelSizeBytes]
- * @property {boolean} [streamModelDownload] Opt-in CPU-only verified model download progress.
+ * @property {boolean} [streamModelDownload] Opt-in CPU-only verified streaming model download progress.
+ * @property {boolean} [bufferModelDownload] Opt-in CPU-only verified complete-buffer model download progress.
  * @property {number} [minPoseDetectionConfidence]
  * @property {number} [minPosePresenceConfidence]
  * @property {number} [minTrackingConfidence]
@@ -91,10 +92,13 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   const modelSha256 = options.modelSha256 ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSha256 : "");
   const modelSizeBytes = options.modelSizeBytes ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSizeBytes : 0);
   const streamModelDownload = options.streamModelDownload ?? false;
+  const bufferModelDownload = options.bufferModelDownload ?? false;
   if (typeof streamModelDownload !== "boolean") throw new Error("streamModelDownload must be a boolean");
-  if (streamModelDownload && delegate === mediaPipeDelegates.cpuWasm &&
+  if (typeof bufferModelDownload !== "boolean") throw new Error("bufferModelDownload must be a boolean");
+  if (streamModelDownload && bufferModelDownload) throw new Error("Model download strategies are mutually exclusive");
+  if ((streamModelDownload || bufferModelDownload) && delegate === mediaPipeDelegates.cpuWasm &&
     (!/^[a-f\d]{64}$/i.test(modelSha256) || !Number.isSafeInteger(modelSizeBytes) || modelSizeBytes <= 0)) {
-    throw new Error("CPU model streaming requires a pinned SHA-256 and positive decoded model byte size");
+    throw new Error("CPU model progress requires a pinned SHA-256 and positive decoded model byte size");
   }
   const minPoseDetectionConfidence = validateThreshold(options.minPoseDetectionConfidence ?? 0.5, "minPoseDetectionConfidence");
   const minPosePresenceConfidence = validateThreshold(options.minPosePresenceConfidence ?? 0.5, "minPosePresenceConfidence");
@@ -224,6 +228,8 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
             delegate,
             ...(streamModelDownload && delegate === mediaPipeDelegates.cpuWasm
               ? { streamModelDownload: true, modelSha256, modelSizeBytes } : {}),
+            ...(bufferModelDownload && delegate === mediaPipeDelegates.cpuWasm
+              ? { bufferModelDownload: true, modelSha256, modelSizeBytes } : {}),
             minPoseDetectionConfidence,
             minPosePresenceConfidence,
             minTrackingConfidence
@@ -320,7 +326,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   function handleMessage(event) {
     const message = event.data ?? {};
     if (message.type === "model-download-progress") {
-      if (!disposed && status === mediaPipeAdapterStatuses.loading && streamModelDownload && delegate === mediaPipeDelegates.cpuWasm &&
+      if (!disposed && status === mediaPipeAdapterStatuses.loading && (streamModelDownload || bufferModelDownload) && delegate === mediaPipeDelegates.cpuWasm &&
         Number.isSafeInteger(message.receivedBytes) && message.receivedBytes >= 0 && message.receivedBytes <= modelSizeBytes &&
         message.totalBytes === modelSizeBytes && typeof message.verified === "boolean" &&
         message.receivedBytes >= (modelDownloadProgress?.receivedBytes ?? 0) &&

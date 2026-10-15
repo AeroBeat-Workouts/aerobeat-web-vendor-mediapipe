@@ -245,6 +245,45 @@ async function main() {
   assert.equal(abortedAdapter.getModelDownloadProgress(), null);
   await abortedAdapter.dispose();
 
+  const bufferWorker = new FakeWorker();
+  const bufferAdapter = createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, workerFactory: () => bufferWorker });
+  const bufferLoading = bufferAdapter.load();
+  const buffered = bufferWorker.messages[0].message.options;
+  assert.equal(buffered.bufferModelDownload, true);
+  assert.equal(buffered.streamModelDownload, undefined);
+  assert.equal(buffered.modelSizeBytes, 5777746);
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: 12, totalBytes: buffered.modelSizeBytes, verified: false });
+  assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, 12);
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: buffered.modelSizeBytes, totalBytes: buffered.modelSizeBytes, verified: true });
+  bufferWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
+  await bufferLoading;
+  assert.equal(bufferAdapter.getModelDownloadProgress().verified, true);
+  const bufferDisposal = bufferAdapter.dispose();
+  bufferWorker.emit({ type: "disposed" });
+  await bufferDisposal;
+  assert.equal(bufferAdapter.getModelDownloadProgress(), null);
+  const failedBufferWorker = new FakeWorker();
+  const failedBufferAdapter = createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, workerFactory: () => failedBufferWorker });
+  const failedBufferLoad = failedBufferAdapter.load();
+  failedBufferWorker.emit({ type: "model-download-progress", receivedBytes: 100, totalBytes: 5777746, verified: false });
+  failedBufferWorker.emit({ type: "error", error: "Model SHA-256 mismatch" });
+  await assert.rejects(failedBufferLoad, /SHA-256 mismatch/);
+  assert.equal(failedBufferAdapter.getModelDownloadProgress(), null);
+  await failedBufferAdapter.dispose();
+  assert.throws(() => createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, streamModelDownload: true }), /mutually exclusive/);
+  assert.throws(() => createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, modelUrl: "https://example.invalid/custom.task" }), /pinned SHA-256/);
+
+  const gpuBufferWorker = new FakeWorker();
+  const gpuBufferAdapter = createMediaPipeWorkerPoseAdapter({ delegate: "gpu-webgl", bufferModelDownload: true, workerFactory: () => gpuBufferWorker });
+  const gpuBufferLoading = gpuBufferAdapter.load();
+  assert.equal(gpuBufferWorker.messages[0].message.options.bufferModelDownload, undefined);
+  gpuBufferWorker.emit({ type: "loaded", actualDelegate: "gpu-webgl" });
+  await gpuBufferLoading;
+  assert.equal(gpuBufferAdapter.getModelDownloadProgress(), null);
+  const gpuBufferDisposal = gpuBufferAdapter.dispose();
+  gpuBufferWorker.emit({ type: "disposed" });
+  await gpuBufferDisposal;
+
   const gpuStreamWorker = new FakeWorker();
   const gpuStreamAdapter = createMediaPipeWorkerPoseAdapter({ delegate: "gpu-webgl", streamModelDownload: true, workerFactory: () => gpuStreamWorker });
   const gpuStreamLoading = gpuStreamAdapter.load();
