@@ -55,6 +55,7 @@ export const mediaPipeWorkerCapabilities = Object.freeze({
  * @property {string} [modelName]
  * @property {string} [modelSha256]
  * @property {number} [modelSizeBytes]
+ * @property {boolean} [streamModelDownload] Opt-in CPU-only verified model download progress.
  * @property {number} [minPoseDetectionConfidence]
  * @property {number} [minPosePresenceConfidence]
  * @property {number} [minTrackingConfidence]
@@ -89,6 +90,12 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   const modelName = options.modelName ?? (usesDefaultModel ? mediaPipeDefaultModelName : model.modelId);
   const modelSha256 = options.modelSha256 ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSha256 : "");
   const modelSizeBytes = options.modelSizeBytes ?? (modelUrl === mediaPipeDefaultModelUrl ? mediaPipeDefaultModelSizeBytes : 0);
+  const streamModelDownload = options.streamModelDownload ?? false;
+  if (typeof streamModelDownload !== "boolean") throw new Error("streamModelDownload must be a boolean");
+  if (streamModelDownload && delegate === mediaPipeDelegates.cpuWasm &&
+    (!/^[a-f\d]{64}$/i.test(modelSha256) || !Number.isSafeInteger(modelSizeBytes) || modelSizeBytes <= 0)) {
+    throw new Error("CPU model streaming requires a pinned SHA-256 and positive decoded model byte size");
+  }
   const minPoseDetectionConfidence = validateThreshold(options.minPoseDetectionConfidence ?? 0.5, "minPoseDetectionConfidence");
   const minPosePresenceConfidence = validateThreshold(options.minPosePresenceConfidence ?? 0.5, "minPosePresenceConfidence");
   const minTrackingConfidence = validateThreshold(options.minTrackingConfidence ?? 0.5, "minTrackingConfidence");
@@ -134,6 +141,8 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   let transferFrameType;
   /** @type {string | undefined} */
   let lastError;
+  /** @type {{ receivedBytes: number, totalBytes: number, verified: boolean } | null} */
+  let modelDownloadProgress = null;
 
   const detail = `MediaPipe Tasks Vision ${delegate === mediaPipeDelegates.cpuWasm ? "CPU/WASM" : "GPU/WebGL"} in dedicated classic worker / thresholds detection ${minPoseDetectionConfidence} presence ${minPosePresenceConfidence} tracking ${minTrackingConfidence}`;
 
@@ -142,6 +151,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
     model,
     get status() { return status; },
     capabilities: mediaPipeWorkerCapabilities,
+    getModelDownloadProgress() { return modelDownloadProgress && { ...modelDownloadProgress }; },
     getExecutionTelemetry() {
       return {
         location: /** @type {const} */ ("worker"),
@@ -198,6 +208,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
       status = mediaPipeAdapterStatuses.loading;
       lastError = undefined;
       actualDelegate = undefined;
+      modelDownloadProgress = null;
       const startedAtMs = now();
       try {
         worker = workerFactory(workerUrl, { name: "aerobeat-mediapipe" });
@@ -211,6 +222,8 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
             wasmRootUrl,
             modelUrl,
             delegate,
+            ...(streamModelDownload && delegate === mediaPipeDelegates.cpuWasm
+              ? { streamModelDownload: true, modelSha256, modelSizeBytes } : {}),
             minPoseDetectionConfidence,
             minPosePresenceConfidence,
             minTrackingConfidence
@@ -286,6 +299,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
       generation += 1;
       status = mediaPipeAdapterStatuses.disposed;
       actualDelegate = undefined;
+      modelDownloadProgress = null;
       loadResolver?.reject(new Error("MediaPipe worker adapter disposed during load."));
       activeEstimate?.reject(new Error("MediaPipe worker adapter disposed during inference."));
       activeEstimate = undefined;
@@ -305,6 +319,16 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   /** @param {MessageEvent} event */
   function handleMessage(event) {
     const message = event.data ?? {};
+    if (message.type === "model-download-progress") {
+      if (!disposed && status === mediaPipeAdapterStatuses.loading && streamModelDownload && delegate === mediaPipeDelegates.cpuWasm &&
+        Number.isSafeInteger(message.receivedBytes) && message.receivedBytes >= 0 && message.receivedBytes <= modelSizeBytes &&
+        message.totalBytes === modelSizeBytes && typeof message.verified === "boolean" &&
+        message.receivedBytes >= (modelDownloadProgress?.receivedBytes ?? 0) &&
+        (!message.verified || message.receivedBytes === modelSizeBytes)) {
+        modelDownloadProgress = { receivedBytes: message.receivedBytes, totalBytes: modelSizeBytes, verified: message.verified };
+      }
+      return;
+    }
     if (message.type === "loaded") {
       if (disposed) return;
       actualDelegate = message.actualDelegate;
@@ -358,6 +382,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
     status = mediaPipeAdapterStatuses.failed;
     lastError = message;
     actualDelegate = undefined;
+    modelDownloadProgress = null;
   }
 
   function finishDisposal() {

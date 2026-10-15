@@ -23,6 +23,10 @@
 let poseLandmarker;
 let lastVideoTimestampMs = Number.NEGATIVE_INFINITY;
 let disposed = false;
+/** @type {AbortController | undefined} */
+let modelDownloadAbort;
+/** @type {(() => Promise<void>) | undefined} */
+let cancelModelDownload;
 
 // Drop the four known MediaPipe WASM internal log lines in the worker
 // console. This file is deliberately import-free (classic worker), so the
@@ -34,15 +38,23 @@ installWorkerWasmConsoleFilter();
 self.onmessage = async (event) => {
   const message = event.data ?? {};
   if (message.type === "load") {
+    /** @type {typeof poseLandmarker} */
+    let loaded;
     try {
       const options = message.options;
       const tasksVision = loadTasksVision(options.tasksVisionScriptUrl);
+      if (disposed) return;
+      const streaming = options.streamModelDownload === true && options.delegate === "cpu-wasm";
+      // Start the single model GET after Vision import. Only headers gate the
+      // resolver; MediaPipe consumes the reader while initializing WASM.
+      const download = streaming ? await startModelDownload(options) : undefined;
+      if (disposed) return;
       const visionFiles = await tasksVision.FilesetResolver.forVisionTasks(options.wasmRootUrl);
-      const loaded = await tasksVision.PoseLandmarker.createFromOptions(visionFiles, {
-        baseOptions: {
-          modelAssetPath: options.modelUrl,
-          delegate: options.delegate === "gpu-webgl" ? "GPU" : "CPU"
-        },
+      if (disposed) return;
+      loaded = await tasksVision.PoseLandmarker.createFromOptions(visionFiles, {
+        baseOptions: streaming
+          ? { modelAssetBuffer: download.reader, delegate: "CPU" }
+          : { modelAssetPath: options.modelUrl, delegate: options.delegate === "gpu-webgl" ? "GPU" : "CPU" },
         runningMode: "VIDEO",
         numPoses: 1,
         outputSegmentationMasks: false,
@@ -50,14 +62,24 @@ self.onmessage = async (event) => {
         minPosePresenceConfidence: options.minPosePresenceConfidence,
         minTrackingConfidence: options.minTrackingConfidence
       });
-      if (disposed) {
-        loaded.close();
-        return;
-      }
+      if (disposed) return;
+      if (download) await download.integrity;
+      if (disposed) return;
       poseLandmarker = loaded;
+      loaded = undefined;
       self.postMessage({ type: "loaded", actualDelegate: options.delegate });
     } catch (error) {
-      self.postMessage({ type: "error", error: readError(error) });
+      loaded?.close();
+      loaded = undefined;
+      modelDownloadAbort?.abort();
+      // A reader may still be pending when MediaPipe rejects construction.
+      // Cancel without waiting before reporting the failed load.
+      void cancelModelDownload?.();
+      if (!disposed) self.postMessage({ type: "error", error: readError(error) });
+    } finally {
+      if (!poseLandmarker) modelDownloadAbort?.abort();
+      cancelModelDownload = undefined;
+      modelDownloadAbort = undefined;
     }
     return;
   }
@@ -97,6 +119,8 @@ self.onmessage = async (event) => {
   if (message.type === "dispose") {
     if (!disposed) {
       disposed = true;
+      modelDownloadAbort?.abort();
+      void cancelModelDownload?.();
       poseLandmarker?.close();
       poseLandmarker = undefined;
       lastVideoTimestampMs = Number.NEGATIVE_INFINITY;
@@ -123,6 +147,99 @@ function loadTasksVision(scriptUrl) {
     throw new Error("MediaPipe Tasks Vision classic-worker bundle did not expose Vision");
   }
   return tasksVision;
+}
+
+/**
+ * @param {{ modelUrl: string, modelSizeBytes: number, modelSha256: string }} options
+ */
+async function startModelDownload(options) {
+  if (!Number.isSafeInteger(options.modelSizeBytes) || options.modelSizeBytes <= 0 ||
+    !/^[a-f\d]{64}$/i.test(options.modelSha256)) throw new Error("Model stream requires pinned SHA-256 and decoded size");
+  const url = new URL(options.modelUrl, self.location.href);
+  if (url.origin !== self.location.origin || !/^https?:$/.test(url.protocol)) {
+    throw new Error("Model stream requires a same-origin HTTP(S) URL");
+  }
+  const abort = new AbortController();
+  modelDownloadAbort = abort;
+  const response = await fetch(url.href, { signal: abort.signal });
+  if (disposed || abort.signal.aborted) {
+    await response.body?.cancel();
+    throw new Error("Model download canceled");
+  }
+  if (!response.ok || !response.body || response.type === "opaque") {
+    throw new Error(`Model stream GET failed: ${response.status}`);
+  }
+  const source = response.body.getReader();
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let receivedBytes = 0;
+  let settled = false;
+  /** @type {(value: void) => void} */
+  let resolveIntegrity;
+  /** @type {(error: Error) => void} */
+  let rejectIntegrity;
+  const integrity = new Promise((resolve, reject) => {
+    resolveIntegrity = resolve;
+    rejectIntegrity = reject;
+  });
+  // Creation can fail before consuming the reader. Avoid an unhandled rejection.
+  void integrity.catch(() => {});
+  /** @param {unknown} reason */
+  const fail = (reason) => {
+    if (settled) return;
+    settled = true;
+    rejectIntegrity(reason instanceof Error ? reason : new Error(String(reason)));
+  };
+  cancelModelDownload = async () => {
+    abort.abort();
+    fail(new Error("Model download canceled"));
+    try { await source.cancel(); } catch { /* Already consumed or errored. */ }
+  };
+  const observed = new ReadableStream({
+    async pull(controller) {
+      try {
+        if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+        const result = await source.read();
+        if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+        if (result.done) {
+          if (receivedBytes !== options.modelSizeBytes) throw new Error("Decoded model length differs from pinned size");
+          const bytes = new Uint8Array(receivedBytes);
+          let offset = 0;
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+          const hash = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)))
+            .map((byte) => byte.toString(16).padStart(2, "0")).join("");
+          if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
+          if (hash !== options.modelSha256.toLowerCase()) throw new Error("Model SHA-256 mismatch");
+          if (!disposed && !abort.signal.aborted) {
+            self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: true });
+            controller.close();
+            settled = true;
+            resolveIntegrity();
+          } else throw new Error("Model download canceled");
+          return;
+        }
+        const chunk = result.value;
+        if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0 ||
+          chunk.byteLength > options.modelSizeBytes - receivedBytes) {
+          throw new Error("Decoded model length exceeded pinned size or invalid stream chunk");
+        }
+        receivedBytes += chunk.byteLength;
+        chunks.push(chunk);
+        self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: false });
+        controller.enqueue(chunk);
+      } catch (error) {
+        fail(error);
+        abort.abort();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      fail(reason ?? new Error("Model reader canceled"));
+      abort.abort();
+      await source.cancel(reason);
+    }
+  }, { highWaterMark: 0 });
+  return { reader: observed.getReader(), integrity };
 }
 
 /** @type {ReadonlyArray<Readonly<{ index: number, name: string }>>} */

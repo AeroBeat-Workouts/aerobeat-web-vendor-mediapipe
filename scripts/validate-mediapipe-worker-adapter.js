@@ -1,6 +1,7 @@
 // @ts-check
 
 import assert from "node:assert/strict";
+import "./validate-mediapipe-worker-stream.js";
 import {
   createMediaPipeWorkerPoseAdapter,
   mediaPipeDefaultWorkerTasksVisionScriptUrl,
@@ -97,6 +98,8 @@ async function main() {
   assert.equal(worker.messages[0].message.type, "load");
   assert.equal(worker.messages[0].message.options.tasksVisionScriptUrl, mediaPipeDefaultWorkerTasksVisionScriptUrl);
   assert.equal(worker.messages[0].message.options.delegate, "gpu-webgl");
+  assert.equal(worker.messages[0].message.options.streamModelDownload, undefined);
+  assert.equal(adapter.getModelDownloadProgress(), null);
   worker.emit({ type: "loaded", actualDelegate: "gpu-webgl" });
   currentTimeMs = 25;
   await loading;
@@ -209,6 +212,50 @@ async function main() {
   await assert.rejects(failedAdapter.load(), /ModuleFactory not set/);
   await failedAdapter.dispose();
 
+  const streamWorker = new FakeWorker();
+  const streamAdapter = createMediaPipeWorkerPoseAdapter({ streamModelDownload: true, workerFactory: () => streamWorker });
+  assert.equal(streamAdapter.getModelDownloadProgress(), null);
+  const streamLoading = streamAdapter.load();
+  const streamed = streamWorker.messages[0].message.options;
+  assert.equal(streamed.streamModelDownload, true);
+  assert.match(streamed.modelSha256, /^[a-f\d]{64}$/);
+  assert.equal(streamed.modelSizeBytes, 5777746);
+  streamWorker.emit({ type: "model-download-progress", receivedBytes: 100, totalBytes: streamed.modelSizeBytes, verified: false });
+  assert.deepEqual(streamAdapter.getModelDownloadProgress(), { receivedBytes: 100, totalBytes: streamed.modelSizeBytes, verified: false });
+  streamWorker.emit({ type: "model-download-progress", receivedBytes: 80, totalBytes: streamed.modelSizeBytes, verified: false });
+  assert.equal(streamAdapter.getModelDownloadProgress().receivedBytes, 100);
+  streamWorker.emit({ type: "model-download-progress", receivedBytes: streamed.modelSizeBytes, totalBytes: streamed.modelSizeBytes, verified: true });
+  assert.equal(streamAdapter.getModelDownloadProgress().verified, true);
+  streamWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
+  await streamLoading;
+  assert.equal(streamAdapter.getModelDownloadProgress().receivedBytes, streamed.modelSizeBytes);
+  const streamDisposal = streamAdapter.dispose();
+  assert.equal(streamAdapter.getModelDownloadProgress(), null);
+  streamWorker.emit({ type: "model-download-progress", receivedBytes: 1, totalBytes: streamed.modelSizeBytes, verified: false });
+  streamWorker.emit({ type: "disposed" });
+  await streamDisposal;
+  assert.equal(streamAdapter.getModelDownloadProgress(), null);
+
+  const abortedWorker = new FakeWorker();
+  const abortedAdapter = createMediaPipeWorkerPoseAdapter({ streamModelDownload: true, workerFactory: () => abortedWorker });
+  const abortedLoad = abortedAdapter.load();
+  abortedWorker.emit({ type: "model-download-progress", receivedBytes: 500, totalBytes: 5777746, verified: false });
+  abortedWorker.emit({ type: "error", error: "Model SHA-256 mismatch" });
+  await assert.rejects(abortedLoad, /SHA-256 mismatch/);
+  assert.equal(abortedAdapter.getModelDownloadProgress(), null);
+  await abortedAdapter.dispose();
+
+  const gpuStreamWorker = new FakeWorker();
+  const gpuStreamAdapter = createMediaPipeWorkerPoseAdapter({ delegate: "gpu-webgl", streamModelDownload: true, workerFactory: () => gpuStreamWorker });
+  const gpuStreamLoading = gpuStreamAdapter.load();
+  assert.equal(gpuStreamWorker.messages[0].message.options.streamModelDownload, undefined);
+  gpuStreamWorker.emit({ type: "loaded", actualDelegate: "gpu-webgl" });
+  await gpuStreamLoading;
+  assert.equal(gpuStreamAdapter.getModelDownloadProgress(), null);
+  const gpuStreamDisposal = gpuStreamAdapter.dispose();
+  gpuStreamWorker.emit({ type: "disposed" });
+  await gpuStreamDisposal;
+  assert.throws(() => createMediaPipeWorkerPoseAdapter({ streamModelDownload: true, modelUrl: "https://example.invalid/custom.task" }), /pinned SHA-256/);
   console.log("MediaPipe worker adapter validation passed.");
 }
 
