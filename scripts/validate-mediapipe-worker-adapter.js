@@ -252,16 +252,41 @@ async function main() {
   assert.equal(buffered.bufferModelDownload, true);
   assert.equal(buffered.streamModelDownload, undefined);
   assert.equal(buffered.modelSizeBytes, 5777746);
-  bufferWorker.emit({ type: "model-download-progress", receivedBytes: 12, totalBytes: buffered.modelSizeBytes, verified: false });
-  assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, 12);
-  bufferWorker.emit({ type: "model-download-progress", receivedBytes: buffered.modelSizeBytes, totalBytes: buffered.modelSizeBytes, verified: true });
+  const selectedTotal = buffered.modelSizeBytes + 323_377 + 11_756_954;
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: 12, totalBytes: selectedTotal, verified: false });
+  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: 12, totalBytes: selectedTotal, verified: false }, "accept genuine partial model bytes under combined signed model+loader+WASM denominator");
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: buffered.modelSizeBytes, totalBytes: selectedTotal, verified: false });
+  assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, buffered.modelSizeBytes, "verified model EOF still below asset 100% while runtime is loading");
+  for (const forged of [
+    { receivedBytes: selectedTotal, totalBytes: selectedTotal + 1, verified: true },
+    { receivedBytes: selectedTotal - 1, totalBytes: selectedTotal, verified: true },
+    { receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: false },
+    { receivedBytes: buffered.modelSizeBytes, totalBytes: buffered.modelSizeBytes, verified: true }
+  ]) {
+    bufferWorker.emit({ type: "model-download-progress", ...forged });
+    assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, buffered.modelSizeBytes, "reject changed/wrong denominator and unverified/partial runtime bytes");
+  }
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: true });
   bufferWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
   await bufferLoading;
-  assert.equal(bufferAdapter.getModelDownloadProgress().verified, true);
+  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: true }, "100% only after model+selected runtime assets have loaded");
   const bufferDisposal = bufferAdapter.dispose();
   bufferWorker.emit({ type: "disposed" });
   await bufferDisposal;
   assert.equal(bufferAdapter.getModelDownloadProgress(), null);
+  for (const runtimeBytes of [323_415 + 11_756_972, 323_180 + 10_960_242]) {
+    const variantWorker = new FakeWorker();
+    const variantAdapter = createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, workerFactory: () => variantWorker });
+    const variantLoading = variantAdapter.load();
+    const totalBytes = 5777746 + runtimeBytes;
+    variantWorker.emit({ type: "model-download-progress", receivedBytes: 5777746, totalBytes, verified: false });
+    assert.deepEqual(variantAdapter.getModelDownloadProgress(), { receivedBytes: 5777746, totalBytes, verified: false }, "selected module/nosimd loader+WASM included without premature 100%");
+    variantWorker.emit({ type: "model-download-progress", receivedBytes: totalBytes, totalBytes, verified: true });
+    variantWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
+    await variantLoading;
+    assert.equal(variantAdapter.getModelDownloadProgress().receivedBytes, totalBytes, "only full selected WASM load reaches 100%");
+    const disposal = variantAdapter.dispose(); variantWorker.emit({ type: "disposed" }); await disposal;
+  }
   const failedBufferWorker = new FakeWorker();
   const failedBufferAdapter = createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, workerFactory: () => failedBufferWorker });
   const failedBufferLoad = failedBufferAdapter.load();

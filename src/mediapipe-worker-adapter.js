@@ -16,6 +16,15 @@ import {
 
 export const mediaPipeDefaultWorkerTasksVisionScriptUrl = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.js";
 
+// Only buffer mode may report the combined decoded model + actually selected
+// Tasks Vision 1.0.1 loader/WASM bytes. Keep these pinned sizes in sync with
+// the classic Worker selection and its package-file/variant regression tests.
+const bufferedRuntimeTotals = new Set([
+  323_377 + 11_756_954, // classic SIMD
+  323_415 + 11_756_972, // module SIMD
+  323_180 + 10_960_242 // classic no-SIMD
+]);
+
 export const mediaPipeWorkerCapabilities = Object.freeze({
   supportsMainThread: false,
   supportsWorker: true,
@@ -326,12 +335,16 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   function handleMessage(event) {
     const message = event.data ?? {};
     if (message.type === "model-download-progress") {
+      const bufferedTotal = bufferModelDownload && Number.isSafeInteger(message.totalBytes) &&
+        bufferedRuntimeTotals.has(message.totalBytes - modelSizeBytes);
+      const validTotal = bufferModelDownload ? bufferedTotal : message.totalBytes === modelSizeBytes;
       if (!disposed && status === mediaPipeAdapterStatuses.loading && (streamModelDownload || bufferModelDownload) && delegate === mediaPipeDelegates.cpuWasm &&
-        Number.isSafeInteger(message.receivedBytes) && message.receivedBytes >= 0 && message.receivedBytes <= modelSizeBytes &&
-        message.totalBytes === modelSizeBytes && typeof message.verified === "boolean" &&
+        validTotal && (modelDownloadProgress === null || modelDownloadProgress.totalBytes === message.totalBytes) &&
+        Number.isSafeInteger(message.receivedBytes) && message.receivedBytes >= 0 && message.receivedBytes <= message.totalBytes &&
+        typeof message.verified === "boolean" &&
         message.receivedBytes >= (modelDownloadProgress?.receivedBytes ?? 0) &&
-        (!message.verified || message.receivedBytes === modelSizeBytes)) {
-        modelDownloadProgress = { receivedBytes: message.receivedBytes, totalBytes: modelSizeBytes, verified: message.verified };
+        (message.verified ? message.receivedBytes === message.totalBytes : message.receivedBytes <= modelSizeBytes)) {
+        modelDownloadProgress = { receivedBytes: message.receivedBytes, totalBytes: message.totalBytes, verified: message.verified };
       }
       return;
     }
