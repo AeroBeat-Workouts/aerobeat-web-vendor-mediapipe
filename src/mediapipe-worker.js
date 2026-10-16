@@ -355,6 +355,7 @@ async function bufferModelDownload(options) {
     if (hash !== options.modelSha256.toLowerCase()) throw new Error("Model SHA-256 mismatch");
     complete = true;
     self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.assetTotalBytes, verified: false });
+    self.postMessage({ type: "model-verified", receivedBytes, totalBytes: options.modelSizeBytes, assetTotalBytes: options.assetTotalBytes });
     return bytes;
   } finally {
     if (!complete) {

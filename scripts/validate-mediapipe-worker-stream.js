@@ -151,6 +151,10 @@ for (const variation of [
   assert.deepEqual(run.messages.filter((message) => message.type === "model-download-progress").map(({ receivedBytes, totalBytes, verified }) => [receivedBytes, totalBytes, verified]),
     [[2, totalAssets, false], [6, totalAssets, false], [6, totalAssets, false], [totalAssets, totalAssets, true]],
     "bar counts the model AND actual selected runtime JS/WASM, reaching 100% only after task load");
+  assert.deepEqual(run.messages.filter(message => message.type === "model-verified").map(message => ({ ...message })),
+    [{ type: "model-verified", receivedBytes: bytes.length, totalBytes: bytes.length, assetTotalBytes: totalAssets }],
+    "only a successful pinned model digest signals verified model bytes before runtime completion");
+  assert.equal(run.messages.findIndex(message => message.type === "model-verified") < run.messages.findIndex(message => message.type === "loaded"), true);
   assert.equal(run.messages.at(-1).type, "loaded");
   await run.self.onmessage({ data: { type: "dispose" } });
   assert.equal(run.calls.closed, 1);
@@ -185,6 +189,8 @@ for (const variation of [
   assert.equal(run.messages.some((message) => message.type === "loaded"), false);
   assert.equal(run.messages.some((message) => message.type === "error"), true);
   if (!variation.rejectCreation) assert.equal(run.calls.create, 0);
+  if (!variation.rejectCreation) assert.equal(run.messages.some(message => message.type === "model-verified"), false,
+    "failed hash, length, fetch or canceled model must not report a verified digest");
 }
 {
   const run = scenario({ buffered: true, chunks: [bytes.subarray(0, 2), bytes.subarray(2)], disposeDuringRead: true });

@@ -254,9 +254,27 @@ async function main() {
   assert.equal(buffered.modelSizeBytes, 5777746);
   const selectedTotal = buffered.modelSizeBytes + 323_377 + 11_756_954;
   bufferWorker.emit({ type: "model-download-progress", receivedBytes: 12, totalBytes: selectedTotal, verified: false });
-  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: 12, totalBytes: selectedTotal, verified: false }, "accept genuine partial model bytes under combined signed model+loader+WASM denominator");
+  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: 12, totalBytes: selectedTotal, verified: false, modelVerified: false }, "accept genuine partial model bytes under combined signed model+loader+WASM denominator");
   bufferWorker.emit({ type: "model-download-progress", receivedBytes: buffered.modelSizeBytes, totalBytes: selectedTotal, verified: false });
-  assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, buffered.modelSizeBytes, "verified model EOF still below asset 100% while runtime is loading");
+  assert.equal(bufferAdapter.getModelDownloadProgress().receivedBytes, buffered.modelSizeBytes, "model EOF still below asset 100% while runtime is loading");
+  assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, false, "last chunk alone is not verified");
+  bufferWorker.emit({ type: "model-verified", receivedBytes: buffered.modelSizeBytes, totalBytes: buffered.modelSizeBytes, assetTotalBytes: selectedTotal + 1 });
+  assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, false);
+  const verifiedSignal = { type: "model-verified", receivedBytes: buffered.modelSizeBytes, totalBytes: buffered.modelSizeBytes, assetTotalBytes: selectedTotal };
+  for (const forged of [
+    { ...verifiedSignal, receivedBytes: buffered.modelSizeBytes - 1 },
+    { ...verifiedSignal, totalBytes: buffered.modelSizeBytes - 1 },
+    { ...verifiedSignal, assetTotalBytes: selectedTotal + 1 }
+  ]) {
+    bufferWorker.emit(forged);
+    assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, false, "reject truncated or wrong-size digest signal");
+  }
+  bufferWorker.emit(verifiedSignal);
+  assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, true, "authenticated full model before WASM construction");
+  bufferWorker.emit({ type: "model-verified", ...verifiedSignal, receivedBytes: buffered.modelSizeBytes - 1 });
+  assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, true, "later malformed signals cannot roll back verification");
+  bufferWorker.emit({ type: "model-download-progress", receivedBytes: buffered.modelSizeBytes - 1, totalBytes: selectedTotal, verified: false });
+  assert.equal(bufferAdapter.getModelDownloadProgress().modelVerified, true, "verification is monotone within this generation");
   for (const forged of [
     { receivedBytes: selectedTotal, totalBytes: selectedTotal + 1, verified: true },
     { receivedBytes: selectedTotal - 1, totalBytes: selectedTotal, verified: true },
@@ -269,7 +287,7 @@ async function main() {
   bufferWorker.emit({ type: "model-download-progress", receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: true });
   bufferWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
   await bufferLoading;
-  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: true }, "100% only after model+selected runtime assets have loaded");
+  assert.deepEqual(bufferAdapter.getModelDownloadProgress(), { receivedBytes: selectedTotal, totalBytes: selectedTotal, verified: true, modelVerified: true }, "aggregate 100% remains reserved for model+selected runtime assets");
   const bufferDisposal = bufferAdapter.dispose();
   bufferWorker.emit({ type: "disposed" });
   await bufferDisposal;
@@ -280,7 +298,7 @@ async function main() {
     const variantLoading = variantAdapter.load();
     const totalBytes = 5777746 + runtimeBytes;
     variantWorker.emit({ type: "model-download-progress", receivedBytes: 5777746, totalBytes, verified: false });
-    assert.deepEqual(variantAdapter.getModelDownloadProgress(), { receivedBytes: 5777746, totalBytes, verified: false }, "selected module/nosimd loader+WASM included without premature 100%");
+    assert.deepEqual(variantAdapter.getModelDownloadProgress(), { receivedBytes: 5777746, totalBytes, verified: false, modelVerified: false }, "selected module/nosimd loader+WASM included without premature 100%");
     variantWorker.emit({ type: "model-download-progress", receivedBytes: totalBytes, totalBytes, verified: true });
     variantWorker.emit({ type: "loaded", actualDelegate: "cpu-wasm" });
     await variantLoading;
@@ -294,6 +312,8 @@ async function main() {
   failedBufferWorker.emit({ type: "error", error: "Model SHA-256 mismatch" });
   await assert.rejects(failedBufferLoad, /SHA-256 mismatch/);
   assert.equal(failedBufferAdapter.getModelDownloadProgress(), null);
+  failedBufferWorker.emit({ type: "model-verified", receivedBytes: 5777746, totalBytes: 5777746, assetTotalBytes: selectedTotal });
+  assert.equal(failedBufferAdapter.getModelDownloadProgress(), null, "failed generation cannot revive verified state");
   await failedBufferAdapter.dispose();
   assert.throws(() => createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, streamModelDownload: true }), /mutually exclusive/);
   assert.throws(() => createMediaPipeWorkerPoseAdapter({ bufferModelDownload: true, modelUrl: "https://example.invalid/custom.task" }), /pinned SHA-256/);

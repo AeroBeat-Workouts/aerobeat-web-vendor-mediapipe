@@ -154,7 +154,7 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
   let transferFrameType;
   /** @type {string | undefined} */
   let lastError;
-  /** @type {{ receivedBytes: number, totalBytes: number, verified: boolean } | null} */
+  /** @type {{ receivedBytes: number, totalBytes: number, verified: boolean, modelVerified?: boolean } | null} */
   let modelDownloadProgress = null;
 
   const detail = `MediaPipe Tasks Vision ${delegate === mediaPipeDelegates.cpuWasm ? "CPU/WASM" : "GPU/WebGL"} in dedicated classic worker / thresholds detection ${minPoseDetectionConfidence} presence ${minPosePresenceConfidence} tracking ${minTrackingConfidence}`;
@@ -344,7 +344,20 @@ export function createMediaPipeWorkerPoseAdapter(options = {}) {
         typeof message.verified === "boolean" &&
         message.receivedBytes >= (modelDownloadProgress?.receivedBytes ?? 0) &&
         (message.verified ? message.receivedBytes === message.totalBytes : message.receivedBytes <= modelSizeBytes)) {
-        modelDownloadProgress = { receivedBytes: message.receivedBytes, totalBytes: message.totalBytes, verified: message.verified };
+        modelDownloadProgress = {
+          receivedBytes: message.receivedBytes, totalBytes: message.totalBytes, verified: message.verified,
+          ...(bufferModelDownload ? { modelVerified: modelDownloadProgress?.modelVerified === true } : {})
+        };
+      }
+      return;
+    }
+    if (message.type === "model-verified") {
+      if (!disposed && status === mediaPipeAdapterStatuses.loading && bufferModelDownload && delegate === mediaPipeDelegates.cpuWasm &&
+        modelDownloadProgress && !modelDownloadProgress.verified &&
+        modelDownloadProgress.receivedBytes === modelSizeBytes &&
+        message.receivedBytes === modelSizeBytes && message.totalBytes === modelSizeBytes &&
+        message.assetTotalBytes === modelDownloadProgress.totalBytes) {
+        modelDownloadProgress = { ...modelDownloadProgress, modelVerified: true };
       }
       return;
     }
