@@ -28,6 +28,44 @@ let modelDownloadAbort;
 /** @type {(() => Promise<void>) | undefined} */
 let cancelModelDownload;
 
+// Decoded bytes in pinned @mediapipe/tasks-vision 1.0.1. The signed public
+// build separately pins the SHA/size of every emitted WASM variant. Resolver
+// URLs select one pair; this table never fetches or guesses partial WASM bytes.
+const wasmAssetPairs = Object.freeze({
+  vision_wasm_internal: Object.freeze({ loader: 323_377, binary: 11_756_954 }),
+  vision_wasm_module_internal: Object.freeze({ loader: 323_415, binary: 11_756_972 }),
+  vision_wasm_nosimd_internal: Object.freeze({ loader: 323_180, binary: 10_960_242 })
+});
+
+/**
+ * @param {unknown} selected
+ * @param {string} wasmRootUrl
+ */
+function selectedRuntimeBytes(selected, wasmRootUrl) {
+  if (!selected || typeof selected !== "object" ||
+    !("wasmLoaderPath" in selected) || !("wasmBinaryPath" in selected) ||
+    typeof selected.wasmLoaderPath !== "string" || typeof selected.wasmBinaryPath !== "string" ||
+    ("assetLoaderPath" in selected && selected.assetLoaderPath != null) ||
+    ("assetBinaryPath" in selected && selected.assetBinaryPath != null)) {
+    throw new Error("Tracker runtime asset inventory is not supported");
+  }
+  const base = new URL(wasmRootUrl, self.location.href);
+  const loader = new URL(selected.wasmLoaderPath, self.location.href);
+  const binary = new URL(selected.wasmBinaryPath, self.location.href);
+  if (base.origin !== self.location.origin || loader.origin !== base.origin || binary.origin !== base.origin ||
+      loader.search || loader.hash || binary.search || binary.hash ||
+      !loader.pathname.startsWith(`${base.pathname.replace(/\/$/u, "")}/`) ||
+      !binary.pathname.startsWith(`${base.pathname.replace(/\/$/u, "")}/`)) {
+    throw new Error("Tracker runtime assets must use the signed same-origin WASM directory");
+  }
+  const loaderName = loader.pathname.slice(loader.pathname.lastIndexOf("/") + 1);
+  const binaryName = binary.pathname.slice(binary.pathname.lastIndexOf("/") + 1);
+  const stem = loaderName.endsWith(".js") ? loaderName.slice(0, -3) : "";
+  const pair = Object.hasOwn(wasmAssetPairs, stem) ? wasmAssetPairs[stem] : undefined;
+  if (!pair || binaryName !== `${stem}.wasm`) throw new Error("Tracker runtime asset pair differs from pinned Tasks Vision 1.0.1");
+  return pair.loader + pair.binary;
+}
+
 // Drop the four known MediaPipe WASM internal log lines in the worker
 // console. This file is deliberately import-free (classic worker), so the
 // install is the self-contained mirror of `wasm-console-filter.js`: same
@@ -47,13 +85,17 @@ self.onmessage = async (event) => {
       const streaming = options.streamModelDownload === true && options.delegate === "cpu-wasm";
       const buffering = options.bufferModelDownload === true && options.delegate === "cpu-wasm";
       if (streaming && buffering) throw new Error("Model download strategies are mutually exclusive");
-      // Buffer mode finishes and verifies the model GET before the resolver/task
-      // may start WASM. Stream mode retains its existing concurrent reader path.
-      const buffer = buffering ? await bufferModelDownload(options) : undefined;
+      // The supported resolver supplies URLs without consuming the WASM body.
+      // Select its exact signed loader/binary variant before model bytes arrive,
+      // then preserve model-first actual transfers. Never create a second GET.
+      const selectedFiles = buffering ? await tasksVision.FilesetResolver.forVisionTasks(options.wasmRootUrl) : undefined;
+      if (disposed) return;
+      const assetTotalBytes = buffering ? options.modelSizeBytes + selectedRuntimeBytes(selectedFiles, options.wasmRootUrl) : undefined;
+      const buffer = buffering ? await bufferModelDownload({ ...options, assetTotalBytes }) : undefined;
       if (disposed) return;
       const download = streaming ? await startModelDownload(options) : undefined;
       if (disposed) return;
-      const visionFiles = await tasksVision.FilesetResolver.forVisionTasks(options.wasmRootUrl);
+      const visionFiles = selectedFiles ?? await tasksVision.FilesetResolver.forVisionTasks(options.wasmRootUrl);
       if (disposed) return;
       loaded = await tasksVision.PoseLandmarker.createFromOptions(visionFiles, {
         baseOptions: buffering
@@ -73,6 +115,10 @@ self.onmessage = async (event) => {
       if (disposed) return;
       poseLandmarker = loaded;
       loaded = undefined;
+      // No public WASM partial-byte stream exists in Tasks Vision 1.0.1. Only
+      // mark its full selected signed loader/binary bytes after the real task
+      // has consumed those assets; calibration is not part of the denominator.
+      if (buffering) self.postMessage({ type: "model-download-progress", receivedBytes: assetTotalBytes, totalBytes: assetTotalBytes, verified: true });
       self.postMessage({ type: "loaded", actualDelegate: options.delegate });
     } catch (error) {
       loaded?.close();
@@ -251,12 +297,13 @@ async function startModelDownload(options) {
 /**
  * Worker-owned reader: verify the complete decoded model before asking Tasks
  * Vision to initialize WASM or construct the task. Never hand it a live reader.
- * @param {{ modelUrl: string, modelSizeBytes: number, modelSha256: string }} options
+ * @param {{ modelUrl: string, modelSizeBytes: number, modelSha256: string, assetTotalBytes: number }} options
  * @returns {Promise<Uint8Array>}
  */
 async function bufferModelDownload(options) {
   if (!Number.isSafeInteger(options.modelSizeBytes) || options.modelSizeBytes <= 0 ||
-    !/^[a-f\d]{64}$/i.test(options.modelSha256)) throw new Error("Model buffer requires pinned SHA-256 and decoded size");
+    !Number.isSafeInteger(options.assetTotalBytes) || options.assetTotalBytes <= options.modelSizeBytes ||
+    !/^[a-f\d]{64}$/i.test(options.modelSha256)) throw new Error("Model buffer requires pinned SHA-256 and decoded asset sizes");
   const url = new URL(options.modelUrl, self.location.href);
   if (url.origin !== self.location.origin || !/^https?:$/.test(url.protocol)) {
     throw new Error("Model buffer requires a same-origin HTTP(S) URL");
@@ -296,7 +343,7 @@ async function bufferModelDownload(options) {
       // Own only the bounded decoded bytes; copy to detach from source buffers.
       chunks.push(chunk.slice());
       receivedBytes += chunk.byteLength;
-      self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: false });
+      self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.assetTotalBytes, verified: false });
     }
     if (receivedBytes !== options.modelSizeBytes) throw new Error("Decoded model length differs from pinned size");
     const bytes = new Uint8Array(receivedBytes);
@@ -307,7 +354,7 @@ async function bufferModelDownload(options) {
     if (disposed || abort.signal.aborted) throw new Error("Model download canceled");
     if (hash !== options.modelSha256.toLowerCase()) throw new Error("Model SHA-256 mismatch");
     complete = true;
-    self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.modelSizeBytes, verified: true });
+    self.postMessage({ type: "model-download-progress", receivedBytes, totalBytes: options.assetTotalBytes, verified: false });
     return bytes;
   } finally {
     if (!complete) {
