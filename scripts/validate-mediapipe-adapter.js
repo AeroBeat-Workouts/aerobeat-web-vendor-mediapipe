@@ -148,6 +148,13 @@ assert.equal(mockAdapter.getTelemetryStatus().provider, mockAdapter.getExecution
 await mockAdapter.load();
 const mockFrame = await mockAdapter.estimateNormalizedPoseFrame();
 assert.equal(mockFrame.landmarks.length, 7);
+const kneeReplay = createMediaPipeMockPoseAdapter({ source: {
+  sourceKind: "replay-fixture", sourceId: "replay-knee", frames: [{ ...mockFrame, sourceId: "replay-knee", landmarks: [...mockFrame.landmarks, ...lowerFrame.landmarks] }]
+} });
+await kneeReplay.load();
+const replayedKnee = await kneeReplay.estimateNormalizedPoseFrame();
+assert.deepEqual(replayedKnee.landmarks.slice(7).map((joint) => joint.name), ["left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle"], "fixture replay preserves optional lower joints without changing seven upper anchors");
+kneeReplay.dispose();
 assert.equal(mockAdapter.getExecutionStatus().mode, "replay");
 assert.equal(mockAdapter.getExecutionTelemetry().location, "unknown");
 assert.equal(mockAdapter.getExecutionTelemetry().provider, "replay");
