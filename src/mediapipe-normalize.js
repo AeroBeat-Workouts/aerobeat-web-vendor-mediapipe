@@ -37,12 +37,19 @@ const aeroBeatLandmarks = Object.freeze([
   Object.freeze({ index: 13, name: "left_elbow" }),
   Object.freeze({ index: 14, name: "right_elbow" }),
   Object.freeze({ index: 15, name: "left_wrist" }),
-  Object.freeze({ index: 16, name: "right_wrist" })
+  Object.freeze({ index: 16, name: "right_wrist" }),
+  Object.freeze({ index: 23, name: "left_hip" }),
+  Object.freeze({ index: 24, name: "right_hip" }),
+  Object.freeze({ index: 25, name: "left_knee" }),
+  Object.freeze({ index: 26, name: "right_knee" }),
+  Object.freeze({ index: 27, name: "left_ankle" }),
+  Object.freeze({ index: 28, name: "right_ankle" })
 ]);
 
 /**
- * Converts MediaPipe Pose Landmarker output into the AeroBeat seven-landmark
- * structural frame. No MediaPipe result object crosses this function boundary.
+ * Converts MediaPipe Pose Landmarker output into AeroBeat's seven upper-body
+ * landmarks plus optional hip/knee/ankle pairs. Missing lower-body joints stay
+ * absent; the seven-point T-pose calibration remains unchanged. No MediaPipe result object crosses this function boundary.
  *
  * @param {MediaPipePoseResultLike | undefined} result Raw MediaPipe result.
  * @param {FrameSourceLike} frameSource Source passed to inference.

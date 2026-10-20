@@ -74,7 +74,13 @@ export const mediaPipeCapabilities = Object.freeze({
     "left_elbow",
     "right_elbow",
     "left_wrist",
-    "right_wrist"
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle"
   ])
 });
 
@@ -137,7 +143,7 @@ export const mediaPipeReplayCapabilities = Object.freeze({
  * @property {number | undefined} loadDurationMs Most recent load duration.
  * @property {number | undefined} lastInferenceDurationMs Last end-to-end adapter estimate duration.
  * @property {number} [runtimeInferenceDurationMs] Most recent synchronous MediaPipe runtime duration.
- * @property {number} [postprocessDurationMs] Most recent seven-point normalization duration.
+ * @property {number} [postprocessDurationMs] Most recent upper/lower pose normalization duration.
  * @property {number} [minPoseDetectionConfidence] Configured detector confidence threshold.
  * @property {number} [minPosePresenceConfidence] Configured landmark presence threshold.
  * @property {number} [minTrackingConfidence] Configured tracking threshold.

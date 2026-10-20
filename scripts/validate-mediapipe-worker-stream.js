@@ -31,7 +31,7 @@ async function waitFor(predicate) {
   throw new Error("Worker did not reach expected state");
 }
 
-function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = false, disposeDuringFetch = false, rejectCreation = false, fetchFailure = false, urlMode = false, gpu = false, buffered = false, runtimeVariant = "vision_wasm_internal", unexpectedAsset = false } = {}) {
+function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = false, disposeDuringFetch = false, rejectCreation = false, fetchFailure = false, urlMode = false, gpu = false, buffered = false, runtimeVariant = "vision_wasm_internal", unexpectedAsset = false, poseResult = { landmarks: [] } } = {}) {
   const messages = [];
   const calls = { fetch: 0, resolver: 0, create: 0, closed: 0, canceled: 0, sourceRead: 0, events: [] };
   let releaseRead;
@@ -61,7 +61,7 @@ function scenario({ chunks = [bytes], expectedHash = hash, disposeDuringRead = f
           if (buffer instanceof Uint8Array) assert.deepEqual(buffer, bytes);
           else while (true) { const result = await buffer.read(); if (result.done) break; }
         }
-        return { close() { calls.closed++; } };
+        return { detectForVideo() { return poseResult; }, close() { calls.closed++; } };
       }
     }
   };
@@ -220,4 +220,17 @@ for (const variant of [{ urlMode: true }, { gpu: true }, { gpu: true, buffered: 
   assert.equal(run.messages.some((message) => message.type === "model-download-progress"), false);
   assert.equal(run.messages.at(-1).type, "loaded");
 }
-console.log("MediaPipe classic Worker model stream validation passed.");
+{
+  const pose = Array.from({ length: 29 }, () => ({ x: Number.NaN, y: Number.NaN, visibility: 0 }));
+  for (const [index, x, y] of [[23, .3, .5], [24, .7, .5], [25, .3, .65], [26, .7, .65], [27, .3, .8], [28, .7, .8]]) pose[index] = { x, y, visibility: .9 };
+  const run = scenario({ poseResult: { landmarks: [pose] } });
+  await run.load;
+  let closed = 0;
+  await run.self.onmessage({ data: { type: "estimate", requestId: 9, frameSource: { width: 640, height: 480, close() { closed++; } }, metadata: { timestampMs: 4000, mirrored: true } } });
+  const result = run.messages.find((message) => message.type === "result" && message.requestId === 9);
+  assert.ok(result, "actual Worker normalizes the measured frame");
+  assert.deepEqual(Array.from(result.frame.landmarks, (landmark) => landmark.name), ["left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle"]);
+  assert.equal(result.frame.landmarks.find((landmark) => landmark.name === "left_knee")?.confidence, .9);
+  assert.equal(closed, 1, "measured lower-body frame releases the source once");
+}
+console.log("MediaPipe classic Worker model stream and optional knees validation passed.");

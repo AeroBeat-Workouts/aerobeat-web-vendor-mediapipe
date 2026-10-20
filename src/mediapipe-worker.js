@@ -375,7 +375,13 @@ const requiredLandmarks = Object.freeze([
   Object.freeze({ index: 13, name: "left_elbow" }),
   Object.freeze({ index: 14, name: "right_elbow" }),
   Object.freeze({ index: 15, name: "left_wrist" }),
-  Object.freeze({ index: 16, name: "right_wrist" })
+  Object.freeze({ index: 16, name: "right_wrist" }),
+  Object.freeze({ index: 23, name: "left_hip" }),
+  Object.freeze({ index: 24, name: "right_hip" }),
+  Object.freeze({ index: 25, name: "left_knee" }),
+  Object.freeze({ index: 26, name: "right_knee" }),
+  Object.freeze({ index: 27, name: "left_ankle" }),
+  Object.freeze({ index: 28, name: "right_ankle" })
 ]);
 
 /**

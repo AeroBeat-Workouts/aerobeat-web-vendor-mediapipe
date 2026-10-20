@@ -32,9 +32,10 @@ Every live, mock, and replay adapter literally conforms to the `@aerobeat/web-co
 
 - matching `vendorId` and plain `model` identity plus lifecycle `status` (including `disposed`)
 - `load()` and `estimateNormalizedPoseFrame()`
-- generic `getExecutionTelemetry()` with actual location/provider plus load, end-to-end estimate, MediaPipe runtime, and seven-point postprocess timings
+- generic `getExecutionTelemetry()` with actual location/provider plus load, end-to-end estimate, MediaPipe runtime, and pose postprocess timings
 - additive vendor diagnostics through `getExecutionStatus()` and `getTelemetryStatus()`, including the configured detector/presence/tracking thresholds
 - immutable capabilities declaring main-thread/worker/mirroring/frame-size support, with live `wasm`/`webgl` providers and replay-only capabilities for deterministic mock frames
+- the unchanged seven upper-body calibration anchors plus optional measured left/right hips, knees, and ankles when MediaPipe sees them. Missing lower-body landmarks are absent, not fabricated; confidence is preserved for downstream knee-only gating. Flow and seven-point T-pose remain unchanged.
 - terminal, idempotent `dispose()`; later load/estimate calls reject and live resources close once
 
 Normalized output contains only nose, shoulders, elbows, and wrists, using names `nose`, `left_shoulder`, `right_shoulder`, `left_elbow`, `right_elbow`, `left_wrist`, and `right_wrist`. `sourceId`, source timestamp, and mirror metadata propagate independently of MediaPipe's internal inference timestamp.
@@ -67,6 +68,6 @@ npm test
 npm run test:browser
 ```
 
-Unit validation uses an injected fake runtime and covers exact load options, CPU/GPU delegate telemetry, strictly monotonic video timestamps, seven-landmark normalization, source metadata, failures, deterministic replay, and `close()` during disposal. Browser smoke launches the local mock demo and fails on console warnings/errors; it never imports the real runtime dynamically or downloads the model.
+Unit validation uses an injected fake runtime and covers exact load options, CPU/GPU delegate telemetry, strictly monotonic video timestamps, upper-body normalization and optional measured lower-body extraction in both direct and classic Worker paths, source metadata, failures, deterministic replay, and `close()` during disposal. Browser smoke launches the local mock demo and fails on console warnings/errors; it never imports the real runtime dynamically or downloads the model.
 
 See `docs/decisions/0001-mediapipe-runtime-and-model.md` for provenance, licensing, asset, and runtime-risk detail.

@@ -45,8 +45,22 @@ assert.deepEqual(publicAdapter.capabilities.normalizedLandmarkNames, [
   "left_elbow",
   "right_elbow",
   "left_wrist",
-  "right_wrist"
+  "right_wrist",
+  "left_hip",
+  "right_hip",
+  "left_knee",
+  "right_knee",
+  "left_ankle",
+  "right_ankle"
 ]);
+const lowerPose = Array.from({ length: 29 }, () => ({ x: Number.NaN, y: Number.NaN, visibility: 0 }));
+for (const [index, x, y, visibility] of [[23, .35, .5, .95], [24, .65, .5, .9], [25, .35, .65, .9], [26, .65, .65, .1], [27, .35, .8, .85], [28, .65, .8, .8]]) lowerPose[index] = { x, y, visibility };
+const lowerFrame = normalizeMediaPipePoseFrame({ landmarks: [lowerPose] }, { currentTime: 2 }, { now: () => 0 });
+assert.deepEqual(lowerFrame.landmarks.map((item) => item.name), ["left_hip", "right_hip", "left_knee", "right_knee", "left_ankle", "right_ankle"]);
+assert.deepEqual(lowerFrame.landmarks.find((item) => item.name === "left_knee"), { name: "left_knee", x: .35, y: .65, confidence: .9 });
+assert.equal(lowerFrame.landmarks.find((item) => item.name === "right_knee")?.confidence, .1, "low-confidence knees remain measurable but must not count as valid gameplay evidence");
+lowerPose[28] = { x: Number.NaN, y: .8, visibility: .8 };
+assert.equal(normalizeMediaPipePoseFrame({ landmarks: [lowerPose] }, {}, { now: () => 0 }).landmarks.some((item) => item.name === "right_ankle"), false, "invalid lower-body joints are absent, not stale");
 assert.equal(Object.isFrozen(mediaPipeCapabilities), true);
 assert.equal(mediaPipeCapabilities.supportsMainThread, true);
 assert.equal(mediaPipeCapabilities.supportsWorker, false);
